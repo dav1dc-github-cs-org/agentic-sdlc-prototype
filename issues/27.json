@@ -6,25 +6,11 @@
   "phase": "researching",
   "baseSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
   "headSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
-  "baseBranch": "main",
   "controlSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
+  "baseBranch": "main",
   "branch": "agentic/epic-27-v1",
   "tasks": [],
   "retiredTasks": [],
-  "evidence": [],
-  "processedEvents": [],
-  "sequence": 1,
-  "repairs": 0,
-  "failures": 0,
-  "feedback": "",
-  "spend": {
-    "runs": 0,
-    "runnerMs": 0,
-    "credits": 0,
-    "nearLimit": 0,
-    "preempted": 0,
-    "historyComplete": true
-  },
   "job": {
     "id": "27-1",
     "stage": "research",
@@ -35,6 +21,21 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-16T21:15:02.885Z",
-    "dispatchedAt": "2026-09-16T21:15:04.050Z"
-  }
+    "dispatchedAt": "2026-09-16T21:15:04.050Z",
+    "runId": 35151310739
+  },
+  "evidence": [],
+  "processedEvents": [],
+  "sequence": 1,
+  "repairs": 0,
+  "failures": 0,
+  "spend": {
+    "runs": 0,
+    "runnerMs": 0,
+    "credits": 0,
+    "nearLimit": 0,
+    "preempted": 0,
+    "historyComplete": true
+  },
+  "feedback": ""
 }
