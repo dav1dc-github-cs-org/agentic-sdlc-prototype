@@ -335,6 +335,9 @@ sequenceDiagram
     opt Security review
     HwWorker->>HwWorker: Seed blocked checkpoint and refresh it as review progresses
     end
+    opt Coding role guidance
+    HwWorker->>HwWorker: Agent packages blocked checkpoint before costly work and refreshes progress
+    end
   HwWorker->>HwWorker: Execute assigned role or deterministic checks
   HwWorker->>HwArtifacts: Upload sdlc-result and supporting evidence
   HwWorker-->>HwActions: Workflow concludes
@@ -429,6 +432,15 @@ runner time only.
 For deterministic checks, the dedicated `SDLC Check Result` job must succeed.
 That job can report a failed scanner or test even when the overall workflow
 conclusion is `failure`. A failed agent workflow has no equivalent exception.
+
+The [Coding profile](../.github/agents/code.agent.md) requires acceptance-to-check
+mapping, current diagnostic triage, consumer entry-point checks, and explicit
+verification limits. It instructs the agent to write and collect provisional
+`blocked` progress reports. Unlike Security checkpoints, these are not seeded
+by trusted preparation or excerpted from failed runs by the controller. Uploaded
+coding checkpoints remain untrusted artifacts, not accepted patches or restored
+retry state. This guidance changes neither the report schema nor acceptance
+gates; see [Coding and Repair Evidence](operations.md#coding-and-repair-evidence).
 
 ## Security and Testing
 

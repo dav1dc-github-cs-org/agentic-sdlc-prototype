@@ -360,6 +360,46 @@ test('research requires a product-fit architecture decision and blocks unsupport
   assert.match(instructions, /Plan approval does not authorize protected-path changes or weaker gates/);
 });
 
+test('coding requires scoped acceptance evidence, diagnostic repairs, and incomplete checkpoints', () => {
+  const source = readFileSync('.github/agents/code.agent.md', 'utf8');
+  const profile = parse(source.split('---')[1]!);
+  assert.equal(profile.name, 'sdlc-code');
+  assert.deepEqual(profile.tools, ['read', 'search', 'edit', 'execute']);
+  for (const heading of ['Before Editing', 'Implementation and Verification', 'Before Returning']) {
+    assert.ok(source.includes(`## ${heading}`));
+  }
+  for (const section of ['Scope and changes', 'Acceptance and evidence', 'Outstanding work', 'Stop reason and handoff']) {
+    assert.ok(source.includes(`**${section}**`));
+  }
+  const instructions = source.replace(/\s+/g, ' ');
+  assert.match(instructions, /Map each assigned acceptance criterion to an observable expected result/);
+  assert.match(instructions, /exact worked examples.*boundaries, invalid inputs, no-ops, and deterministic replay/);
+  assert.match(instructions, /Coverage percentage is not requirements coverage/);
+  assert.match(instructions, /candidate regression, pre-existing or protected defect, or infrastructure\/tooling failure/);
+  assert.match(instructions, /actual diagnostic for the registered source commit/);
+  assert.match(instructions, /rule identifier, path, and line where available/);
+  assert.match(instructions, /report the required maintainer action/);
+  assert.match(instructions, /smallest coherent change, then immediately run the focused check/);
+  assert.match(instructions, /without modifying baseline test files/);
+  assert.match(instructions, /Treat test code as scanned source/);
+  assert.match(instructions, /recheck the actual rule with approved available tooling/);
+  assert.match(instructions, /consumer entry point.*working directory, server root, or package exports/);
+  assert.match(instructions, /Static markup, CSS, or DOM-mock assertions do not prove browser rendering/);
+  assert.match(instructions, /Do not add unapproved tooling/);
+  assert.match(instructions, /Record exact commands, working directories, exit statuses/);
+  assert.match(instructions, /`npm run verify` does not imply CodeQL ran/);
+  assert.match(instructions, /outcome: "blocked"/);
+  assert.match(instructions, /Coding work incomplete/);
+  assert.match(instructions, /node control\/src\/worker\.ts collect/);
+  assert.match(instructions, /Never leave a provisional `pass` on disk/);
+  assert.match(instructions, /Do not estimate remaining credits/);
+  assert.match(instructions, /runner termination can prevent upload/);
+  assert.match(instructions, /untrusted diagnostics, not accepted changes or evidence/);
+  assert.match(instructions, /Return `pass` only when the assigned work and required coding checks are complete/);
+  assert.match(instructions, /Return `blocked` for unfinished work/);
+  assert.match(instructions, /Downstream gates remain independent/);
+});
+
 test('security requires explicit completeness and non-passing review checkpoints', () => {
   const source = readFileSync('.github/agents/security.agent.md', 'utf8');
   const profile = parse(source.split('---')[1]!);

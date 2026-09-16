@@ -484,6 +484,42 @@ Also test pausing an in-flight job and a deliberately failing test on a disposab
 pilot. Do not treat local mocks as evidence that live credentials, billing,
 network policies, CodeQL licensing, or Copilot behavior work in your organization.
 
+## Coding and Repair Evidence
+
+The [Coding profile](../.github/agents/code.agent.md) maps each assigned criterion
+and relevant worked example to an observable result and check before editing.
+It adds regression coverage within permitted paths, treats test code as scanned
+source, and verifies the actual consumer entry point, including build output,
+module or asset resolution, and the launch working directory or server root.
+Checks use approved available tools; static markup or DOM-mock assertions do
+not establish browser behavior. Only manual follow-up explicitly permitted by
+the approved plan may remain pending without blocking required validation.
+
+Repairs start from the current diagnostic's checker or command, rule, path, and
+line where available, not an earlier agent's explanation. The agent distinguishes
+candidate regressions from pre-existing or protected defects and infrastructure
+failures. It uses a bounded reproduction and focused checks; missing evidence or
+protected-file repairs require an actionable `blocked` report, not a blind search
+or weaker gate. Final evidence records commands, working directories, exit
+statuses, and limitations. `npm run verify` runs typecheck, coverage tests, and
+build; it is not CodeQL execution or proof of browser behavior.
+
+Before expensive investigation and after meaningful progress, the coding agent
+writes a provisional `blocked` report beginning `Coding work incomplete` and
+packages it with `node control/src/worker.ts collect`. Unlike Security, trusted
+preparation does not seed this checkpoint. The existing final upload attempts
+to retain the last packaged result, but runner termination can prevent capture.
+Failed coding checkpoints are artifacts for inspection, not automatically
+included in the controller's Security-only checkpoint excerpts or restored in a
+retry checkout. No partial changes or passing evidence are accepted from them.
+A successful workflow returning `blocked` blocks the lifecycle normally.
+
+The summary includes scope and changes, acceptance and evidence, outstanding
+work, and the stop reason and handoff. `pass` requires completed assigned work
+and required coding checks; later independent gates are not self-approved.
+These are prompt-level practices, not new schema-enforced evidence or recovery
+guarantees. Permissions, baseline immutability, budgets, and gates are unchanged.
+
 ## Test Design and Coverage
 
 The [Testing agent](../.github/agents/test.agent.md) derives a starting test plan

@@ -172,6 +172,13 @@ permissions, regular-file types, baseline tests, and branch history before
 writing through the Git Data API. It never executes candidate code or artifact
 scripts. A replay after a branch write can recover the already-published commit.
 
+Coding maps acceptance criteria to checks, diagnoses repairs from current
+scanner or test evidence, and verifies the changed consumer entry point with
+approved tooling. Reports distinguish static checks, runtime execution, and
+scanner results. Provisional `blocked` checkpoints preserve incomplete progress
+as untrusted artifacts, not accepted changes or automatic retry state. See
+[Coding and Repair Evidence](docs/operations.md#coding-and-repair-evidence).
+
 Security reviews keep provisional `blocked` checkpoints with reviewed areas,
 findings, and outstanding work. Failed attempts receive diagnostic comments
 with their job, commit, usage, stop signal, and any valid Security checkpoint.
