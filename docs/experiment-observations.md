@@ -7,16 +7,31 @@ says so.
 
 This is a record of an experiment in progress, not a recommendation.
 
+Evidence reviewed on 2026-09-16. Historical measurements and setup observations
+below retain their original scope; they are not refreshed live accounting or
+repository-setting snapshots.
+
 ## What has run so far
 
-| Lifecycle | Outcome | Plans | Jobs | Repairs |
-| --- | --- | --- | --- | --- |
-| Issue #1, multi-timezone clocks | Cancelled at `pr_open`; PR #18 left open | 5 | 34 | 2 of 2 |
-| Issue #19, turtle graphics | In progress, still `decomposing` | 2 | 13 | 1 of 2 |
+The retained run inventory includes 34 lifecycle jobs for issue #1 and 31 for
+issue #19, across all plan versions and agent/check stages.
+
+| Lifecycle | Latest recorded evidence | Jobs observed |
+| --- | --- | --- |
+| Issue #1, multi-timezone clocks | Cancelled at `pr_open`; PR #18 left open at the earlier checkpoint | 34 |
+| Issue #19, turtle graphics | [Final review, job 19-31](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/34885277394), passed on 2026-09-14 | 31 |
+
+The earlier checkpoint recorded five plans and two of two repair rounds for
+issue #1, and two plans, 13 jobs, and one of two repair rounds for issue #19.
+Those counters remain historical measurements, not refreshed totals. Issue #19
+was replanning at that checkpoint; it is no longer accurately described by the
+old `decomposing` snapshot. The later review result does not establish current
+PR state or a merge, neither of which was rechecked for this update.
 
 Issue #1 reached a published pull request of 391 lines across 8 files, having
-passed every gate. It was then cancelled rather than merged. One complete
-traversal of the lifecycle is therefore demonstrated; a merged feature is not.
+passed every gate. At the recorded checkpoint, its lifecycle was cancelled
+rather than merged. A traversal through PR publication is therefore demonstrated;
+the inspected evidence does not establish a merged feature.
 
 ## Learnings
 
@@ -25,7 +40,8 @@ traversal of the lifecycle is therefore demonstrated; a merged feature is not.
 The CodeQL gate originally reported only `CodeQL found N blocking or unclassified
 findings`. No rule, no path, no line. A coding agent receiving that feedback
 cannot act on it, and the observed behaviour was a blind search that consumed
-repair rounds and eventually exhausted the credit budget for the run.
+repair attempts and credits before stopping without a result. The provider
+errors and near-cap usage do not alone establish credit-limit pre-emption.
 
 The fix propagates rule identifier, file, line, and severity through the check
 job's output into the agent's feedback. This is the single highest-value change
@@ -44,9 +60,11 @@ the function that ingests untrusted agent output. That is precisely the code
 where the defect mattered most. It was found by a scanner, not by the security
 agent or the review agent.
 
-Two of the three findings across the period were false positives, both cheap to
-reshape. A roughly one-in-three true positive rate on security-severity 7 or
-above is a reasonable argument for keeping the threshold as a hard block.
+Two of the three findings in the initial baseline scans were treated as false
+positives, both in test assertions. Later candidate scans found additional URL
+assertion issues, so that historical ratio is not a measure of all runs. The
+genuine file-race finding demonstrates the value of an independent scanner;
+this small sample does not establish a general true-positive rate.
 
 ### Refusal is a feature, and it worked
 
@@ -59,22 +77,28 @@ and changed nothing.
 An agent that fabricates compliance is far more dangerous than one that stops.
 This behaviour should be protected in any future prompt changes.
 
-### Cost is front-loaded, non-linear, and larger than it appears
+### Cumulative cost does not identify which phase spent it
 
-Issue #19 has consumed 978.5 AI credits and 96.2 runner minutes across 12 runs
-**before implementation began**. It is still decomposing.
+An earlier issue #19 checkpoint recorded 978.5 AI credits and 96.2 runner
+minutes across 12 runs, before job 19-13. That checkpoint was during replanning,
+not before the first implementation. The
+[engine job 19-3](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/34664319966)
+and [UI job 19-4](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/34664678733)
+had already implemented code on 2026-09-12. The cumulative total includes
+earlier implementation and failed repairs as well as planning.
 
 A point-in-time measurement of issue #1's first 30 agent runs recorded 1,356.2
 credits, 466,487 agent tokens, and 3.6 hours. Two observations follow:
 
-- Planning and replanning, not coding, dominated spend in both lifecycles.
+- Replanning preserves cumulative costs. The phase at the measurement time
+   cannot establish which earlier stages dominated spend in either lifecycle.
 - The headline token figure excludes gh-aw's threat-detection pass, which
   consumed 371,400 input tokens against the agent's 171,562. Roughly half of all
   token traffic is the injection scan re-reading agent output.
 
-Three of issue #19's twelve runs finished near the then-configured 200-credit per-run cap. That
-rate suggests the cap is close to the working size of these prompts rather than a
-distant safety net.
+Three runs in issue #19's original twelve-run snapshot finished near the
+then-configured 200-credit per-run cap. Near-cap usage is not itself proof that
+the limiter stopped a run.
 
 Subsequent runs can use `SDLC_AIC_CREDIT_LIMIT` (default 250) to tune that limit
 without recompilation; the measurements above retain their original limits.
@@ -148,19 +172,27 @@ self-hosting; see [Packaging](#packaging).
 
 Pre-emption detection reads `steps.parse-mcp-gateway.outputs.ai_credits_rate_limit_error`.
 That step identifier is a gh-aw implementation detail. If a compiler upgrade
-renames it, the expression evaluates empty and every run is recorded as never
-pre-empted — a silent failure producing confidently wrong data.
+renames it, the expression evaluates empty. The current workflow records an
+absent stop signal as `null`, not `false`. The controller warns about unavailable
+telemetry, retains it for bounded collection, and marks cost history incomplete
+if it cannot recover the signal. Missing data does not establish that a run was
+never pre-empted.
 
 A test asserts the identifier still exists in the lockfile, so an upgrade fails CI
-rather than corrupting the metric. The coupling remains.
+when that identifier changes. The coupling remains, and preserving `null` does
+not prove that an explicit `false` signal is accurate.
 
 ### Pre-emption detection is still unvalidated
 
-Issue #19 records `preempted: 0` across 12 runs, while a commit exists describing
-a run that exhausted the credit budget. Either the exhaustion predates the
-accounting, or the detection did not fire. **The positive path has never been
-observed in production.** Until a run is deliberately forced over a lowered cap
-and the flag is seen to flip, this metric should not be trusted.
+The earlier issue #19 snapshot recorded zero pre-emptions across 12 runs.
+Retained receipts for
+[repair 19-10](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/34667071711)
+and [repair 19-11](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/34667678511)
+report 202.1 and 201.7 credits respectively, both with `preempted: false`.
+Both attempts ended with provider HTTP 403 and no result artifact. Neither that
+status nor the credit total establishes the stop cause. The inspected evidence
+does not validate the positive pre-emption signal; a separately authorized,
+controlled limit test is still needed.
 
 ### Pre-emption is not an acceptance gate
 
@@ -176,18 +208,19 @@ When the limiter stops a run, three things can happen to its output. Two are
 already safe: if no `result.json` was written the upload fails and the controller
 counts an infrastructure failure, and if the file is truncated the schema
 rejects it. The third is not. A structurally valid result that reports `pass`
-while describing work the agent was interrupted part-way through is **accepted
-normally** — the phase advances, evidence is recorded against the head commit,
-and the lifecycle proceeds toward publication.
+from a **successful agent workflow** can still be accepted despite incomplete
+work or a pre-emption warning, provided it passes the other acceptance checks.
+Failed agent workflows remain rejected even if they upload a valid `pass` report.
 
-That third case is also the most likely one, because the cap is applied between
-inferences rather than mid-request. The agent is stopped at a boundary where it
-has probably already written a well-formed file.
+The cap is applied between inferences rather than mid-request, so a well-formed
+file may already exist when work stops. File validity alone is not proof of
+completed work; the inspected evidence does not establish how often this occurs.
 
 The consequence is that a feature can reach a pull request carrying work that was
-cut short, despite the new warning comment. The Security profile now requires
-explicit review coverage and provisional blocked checkpoints, but that is model
-guidance, not independent proof that a final pass means the review was complete.
+cut short, despite the warning comment. The Coding and Security profiles now
+require explicit evidence, outstanding work, and provisional blocked checkpoints,
+but that is model guidance, not independent proof that a final pass means the
+assigned work was complete.
 
 The cheapest mitigation is to treat a pre-empted run as not-pass regardless of
 the outcome it reports. Pre-emption is the one case where the harness knows more
@@ -294,8 +327,8 @@ These are load-bearing and currently unverified or only partially verified:
 
 1. Would a different model at the `security` and `review` stages catch defects
    the author's own model produces? Currently unknowable.
-2. Is roughly 1,000 credits of planning before implementation inherent to the
-   approach, or an artefact of prompt size and replanning churn?
+2. How much cumulative spend belongs to planning, implementation, and repairs,
+   and how much could be avoided by reducing replanning churn?
 3. Does the repair budget of two rounds fit the work? Issue #1 succeeded on its
    last available attempt, which is not reassuring.
 4. What is the merged-feature quality? PR #18 passed every gate and was cancelled

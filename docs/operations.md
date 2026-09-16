@@ -348,10 +348,18 @@ JSON
 ```
 
 Code-owner review only takes effect once the repository has a `CODEOWNERS` file.
-The included [.github/CODEOWNERS](../.github/CODEOWNERS) mirrors the protected
-paths in [policy.json](../.github/sdlc/policy.json), so the surface agents cannot
-touch also cannot reach the default branch unreviewed. Replace the owner handle
-with a maintainer or team in your own account, then confirm GitHub resolves it:
+The included [.github/CODEOWNERS](../.github/CODEOWNERS) covers `.github/`,
+top-level controller modules, tests, and the root dependency manifests and
+TypeScript configuration. It covers only part of the protected paths in
+[policy.json](../.github/sdlc/policy.json): `.agents/**`, `.vscode/**`, nested
+manifests, instruction files outside `.github/`, and several other protected
+configuration patterns have no matching ownership entry. Those paths remain
+blocked to agents, but code-owner review is not automatically required for them.
+Review ownership coverage separately from agent path restrictions before enabling
+the pipeline; broader coverage requires a reviewed maintainer change.
+
+Replace the owner handle with a maintainer or team in your own account, then
+confirm GitHub resolves it:
 `gh api "/repos/$repo/codeowners/errors"` reports unknown owners and owners
 without write access, and an unresolvable owner silently disables the rule.
 
@@ -713,8 +721,11 @@ be run manually from the Actions tab, optionally for one issue.
 - A blocked lifecycle needs investigation. Use `/sdlc retry` for the registered
   stage only after correcting the cause. Do not use GitHub's rerun button on
   worker jobs: rerun attempts are deliberately excluded from trusted results.
-- If the default branch or issue scope changes, use `/sdlc revise ...` and
-  approve the new plan. Earlier branches remain available for inspection.
+- If the issue scope, default branch name, or protected paths on the default
+  branch change, use `/sdlc revise ...` and approve the new plan. Movement outside
+  protected paths is adopted as the trusted workflow revision between jobs;
+  it does not automatically rebase the candidate branch. Earlier branches remain
+  available for inspection.
 - Cancellation saves any unsettled accounting identity while invalidating
   in-flight results, before requesting cancellation of the worker run. A late
   receipt can update costs; a late result cannot restart the lifecycle.

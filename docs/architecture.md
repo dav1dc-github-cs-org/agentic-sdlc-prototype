@@ -275,8 +275,10 @@ sequenceDiagram
 Only new, unedited human comments with standalone recognized commands are
 processed, once per comment ID. The requester may approve or revise after
 trusted intake, even if they are not a repository writer. Writers may also
-approve. Commands from other users are ignored; valid authors receive rejection
-feedback for invalid state or stale versions.
+approve. Among processed commands, those from other human authors receive an
+explicit rejection without authorizing a lifecycle change. Authorized authors
+also receive rejection feedback for invalid state, insufficient privileges for
+the command, or stale versions.
 
 A first lifecycle can only be created from an authorized human label event, not
 from a later schedule or manual reconciliation. If the issue changes after that
@@ -339,14 +341,19 @@ sequenceDiagram
     HwWorker->>HwWorker: Agent packages blocked checkpoint before costly work and refreshes progress
     end
   HwWorker->>HwWorker: Execute assigned role or deterministic checks
-  HwWorker->>HwArtifacts: Upload sdlc-result and supporting evidence
-  HwWorker-->>HwActions: Workflow concludes
-  HwActions->>HwArtifacts: Upload sdlc-cost with limit, selector, observed models, and token counts
+  HwWorker-->>HwActions: Execution finishes or fails
+    alt Agent workflow post-steps
+    HwActions->>HwArtifacts: Attempt sdlc-cost upload with limit, selector, models, and token counts
+    HwActions->>HwArtifacts: Attempt last packaged sdlc-result upload
+    else Deterministic check workflow
+    HwActions->>HwArtifacts: Upload check evidence and sdlc-result when available
+    end
+  HwActions->>HwActions: Finish remaining jobs and conclude workflow
   HwActions-)HwControl: workflow_run completion event
   HwControl->>HwActions: Discover expected workflow, actor, revision, and run
   HwActions-->>HwControl: Matching first-attempt run metadata
   HwControl->>HwState: Bind run ID to active job
-  HwControl->>HwArtifacts: Read job durations and sdlc-cost
+  HwControl->>HwArtifacts: Read job durations and agent cost receipt if applicable
     break Cost retrieval or receipt validation throws
         alt Retryable error within the job timeout
       HwControl->>HwControl: Retain registered job for a later reconciliation
@@ -594,9 +601,9 @@ flowchart TD
     RecoveryFindings -->|"Repair budget exhausted"| RecoveryBlocked
     RecoveryCode --> RecoveryActive
     RecoveryActive -->|"Explicit blocked report or total job limit"| RecoveryBlocked
-    RecoveryActive -->|"Issue or trusted revision changed"| RecoveryInvalidate
+    RecoveryActive -->|"Issue, base branch, or protected paths changed"| RecoveryInvalidate
     RecoveryBlocked -->|"Writer retries after resolving cause"| RecoveryRetry
-    RecoveryBlocked -->|"Scope or trusted revision changed"| RecoveryRevise
+    RecoveryBlocked -->|"Authorized revision command"| RecoveryRevise
     RecoveryPaused -->|"Authorized revision command"| RecoveryRevise
     RecoveryActive -->|"Authorized revision command"| RecoveryRevise
     RecoveryRevise --> RecoveryResearch --> RecoveryActive

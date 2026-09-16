@@ -31,7 +31,9 @@ flowchart TD
   publication --> human[Human review and merge]
   scans -->|Findings| coding
   security -->|Findings| coding
+  testing -->|Findings| coding
   validation -->|Failures| coding
+  documentation -->|Findings| coding
   review -->|Findings| coding
 ```
 
