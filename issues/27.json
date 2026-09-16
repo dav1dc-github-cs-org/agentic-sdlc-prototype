@@ -11,6 +11,19 @@
   "branch": "agentic/epic-27-v1",
   "tasks": [],
   "retiredTasks": [],
+  "job": {
+    "id": "27-2",
+    "stage": "research",
+    "inputSha": "02dc629297d6fa1005a04e3a2d60bfb875da3d35",
+    "controlSha": "02dc629297d6fa1005a04e3a2d60bfb875da3d35",
+    "planHash": null,
+    "taskId": null,
+    "feedback": "Prerequisite tooling is now installed. Replan the chess app against the current default branch without changing its requirements.",
+    "attempt": 1,
+    "createdAt": "2026-09-16T21:33:51.472Z",
+    "dispatchedAt": "2026-09-16T21:33:52.887Z",
+    "runId": 35153083364
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5704851018"
@@ -72,17 +85,5 @@
       }
     }
   ],
-  "feedback": "Prerequisite tooling is now installed. Replan the chess app against the current default branch without changing its requirements.",
-  "job": {
-    "id": "27-2",
-    "stage": "research",
-    "inputSha": "02dc629297d6fa1005a04e3a2d60bfb875da3d35",
-    "controlSha": "02dc629297d6fa1005a04e3a2d60bfb875da3d35",
-    "planHash": null,
-    "taskId": null,
-    "feedback": "Prerequisite tooling is now installed. Replan the chess app against the current default branch without changing its requirements.",
-    "attempt": 1,
-    "createdAt": "2026-09-16T21:33:51.472Z",
-    "dispatchedAt": "2026-09-16T21:33:52.887Z"
-  }
+  "feedback": "Prerequisite tooling is now installed. Replan the chess app against the current default branch without changing its requirements."
 }
