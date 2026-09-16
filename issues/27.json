@@ -13,7 +13,7 @@
   "retiredTasks": [],
   "evidence": [],
   "processedEvents": [],
-  "sequence": 0,
+  "sequence": 1,
   "repairs": 0,
   "failures": 0,
   "feedback": "",
@@ -24,5 +24,16 @@
     "nearLimit": 0,
     "preempted": 0,
     "historyComplete": true
+  },
+  "job": {
+    "id": "27-1",
+    "stage": "research",
+    "inputSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
+    "controlSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
+    "planHash": null,
+    "taskId": null,
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-16T21:15:02.885Z"
   }
 }
