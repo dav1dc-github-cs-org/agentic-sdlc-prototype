@@ -14,12 +14,14 @@ repository-setting snapshots.
 ## What has run so far
 
 The retained run inventory includes 34 lifecycle jobs for issue #1 and 31 for
-issue #19, across all plan versions and agent/check stages.
+issue #19, across all plan versions and agent/check stages. A later inspection
+on the same date also captured the first research job for issue #27.
 
 | Lifecycle | Latest recorded evidence | Jobs observed |
 | --- | --- | --- |
 | Issue #1, multi-timezone clocks | Cancelled at `pr_open`; PR #18 left open at the earlier checkpoint | 34 |
 | Issue #19, turtle graphics | [Final review, job 19-31](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/34885277394), passed on 2026-09-14 | 31 |
+| Issue #27, portable chess | [Research, job 27-1](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/35151310739), returned `blocked` on 2026-09-16 | 1 |
 
 The earlier checkpoint recorded five plans and two of two repair rounds for
 issue #1, and two plans, 13 jobs, and one of two repair rounds for issue #19.
@@ -76,6 +78,51 @@ and changed nothing.
 
 An agent that fabricates compliance is far more dangerous than one that stops.
 This behaviour should be protected in any future prompt changes.
+
+### Missing capabilities need a maintainer-approved handoff
+
+Issue #27 exposed a different kind of stop. Its
+[research workflow](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/35151310739)
+completed successfully, but the report returned `blocked`. The
+[inspected lifecycle status](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/issues/27#issuecomment-5704612276)
+recorded one job, no coding tasks, and no approval-ready plan. It used 75.9 AI
+credits against a captured 300-credit limit and 8.7 runner minutes. This was an
+explicit capability block, not a hung run or a reported budget exhaustion.
+
+The chess specification requires a rules library, a local opponent engine,
+self-contained browser packaging, and real-browser validation. The repository
+had none of that tooling installed, and the necessary dependency manifests and
+validation configuration were protected from feature-job edits. The
+[specification](chess-game-feature.md#research-and-maintainer-prerequisites)
+already identified those prerequisites. Research correctly stopped instead of
+inventing an executable plan or claiming unsupported browser evidence.
+
+**A detailed feature specification does not make the pipeline capable of building
+it.** Product suitability and pipeline readiness are separate decisions. The
+controller can surface a prerequisite request, but it has no automated process
+for getting that request approved and installed. Plan approval does not grant
+agents authority to change their own toolchain or gates; an unchanged retry or
+a larger inference budget cannot supply the missing capabilities.
+
+The report also overstated some restrictions. `sourcePaths` controls coverage
+inclusion, not a coding-stage edit allowlist, and browser execution does not
+inherently require additional GitHub permissions. The actual blockers were
+missing approved dependencies and build/test integration, not a need to widen
+all source-path or token permissions. Blocked reports still need factual review.
+
+The proposed response is a maintainer-reviewed web-app foundation: pin suitable
+rules and search dependencies, review engine redistribution obligations, build
+one portable release, and add browser checks to the existing unprivileged SDLC
+validation job. Extending `npm run verify` alone is insufficient because the
+[hosted validator](../src/validate.ts) invokes the Node test suite directly.
+Generated engine binaries should remain build artifacts, not exceptions to the
+text-only proposal collector. Existing coverage and security gates must remain.
+
+After those prerequisites are reviewed and landed, `/sdlc revise` and fresh
+plan approval can resume normal execution against the new trusted revision.
+That foundation and recovery had not been implemented or exercised at this
+checkpoint. Whether a reusable prerequisite process reduces future blocked
+research cycles remains to be demonstrated.
 
 ### Cumulative cost does not identify which phase spent it
 
