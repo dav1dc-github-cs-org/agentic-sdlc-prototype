@@ -2,8 +2,8 @@ import { approvePlan, makePlan, parseCommand, type Phase } from './domain.ts';
 import { reportSchema, type Change, type Cost, type Intake, type Policy, type Report } from './contracts.ts';
 import { validateChanges } from './changes.ts';
 import {
-  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, nextTask, observeCost, recordChange, recordSpend,
-  requestRepair, startJob, validateTasks, type Job, type JobIdentity, type Lifecycle, type PendingCost, type Stage, type Task,
+  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, formatObservedModels, nextTask, observeCost, recordChange,
+  recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Job, type JobIdentity, type Lifecycle, type PendingCost, type Stage, type Task,
 } from './lifecycle.ts';
 
 export interface Issue {
@@ -324,8 +324,8 @@ export class Controller {
         const retryable = transientPlatformError(error);
         const age = this.clock().getTime() - Date.parse(job.createdAt);
         if (retryable && age <= this.policy.jobTimeoutMinutes * 60_000) throw error;
-        const pending = state.pendingCosts?.find(item => item.job.id === job.id);
-        if (pending?.observed) recordSpend(state, pending.observed, this.policy.maxJobCredits);
+        const pending = this.retainCost(state, job);
+        if (pending) settleCost(state, pending, this.policy.maxJobCredits);
         forgetCost(state, job.id);
         state.spend.historyComplete = false;
         const reason = retryable ? 'remained unavailable past the job timeout' : 'was rejected';
@@ -364,6 +364,7 @@ export class Controller {
       }
       return this.failed(record, `Worker output rejected: ${this.message(error)}`);
     }
+    if (report.outcome !== 'pass') recordUsageResult(state, job, report.outcome, state.headSha);
     if (report.outcome === 'blocked') {
       state.resumePhase = state.phase;
       state.phase = 'blocked';
@@ -387,6 +388,7 @@ export class Controller {
         return this.failed(record, `Publisher rejected changes: ${this.message(error)}`);
       }
     }
+    recordUsageResult(state, job, report.outcome, state.headSha);
     state.job = undefined;
     state.failures = 0;
     state.error = undefined;
@@ -487,7 +489,7 @@ export class Controller {
         'Only observed values were recorded. Missing telemetry is not measured zero. ' +
         'Automatic collection has stopped; this accounting record does not accept any worker result.');
     }
-    if (pending.observed) recordSpend(state, pending.observed, this.policy.maxJobCredits);
+    settleCost(state, pending, this.policy.maxJobCredits);
     if (reason) state.spend.historyComplete = false;
     if (state.job?.id === pending.job.id && pending.job.runId !== undefined) state.job.costedRun = pending.job.runId;
     forgetCost(state, pending.job.id);
@@ -527,7 +529,9 @@ export class Controller {
     return `${label}: ${(runnerMs / 60_000).toFixed(1)} runner minutes, ${credits.toFixed(1)} AI credits ` +
       `over ${runs} run${runs === 1 ? '' : 's'}. Near-limit runs: ${nearLimit}. Pre-empted: ${preempted}. ` +
       (state.pendingCosts?.length ? `Pending cost collection: ${state.pendingCosts.length} job(s), excluded from these totals. ` : '') +
-      `Current per-job limit: ${this.policy.maxJobCredits} AI credits.`;
+        `Current per-job limit: ${this.policy.maxJobCredits} AI credits.\n\n` +
+      `Observed agent models: ${formatObservedModels(state.spend.models)}. ` +
+        'Available primary-agent telemetry only; missing/legacy runs and separate detection inference are not covered.';
   }
 
   private async status(state: Lifecycle): Promise<void> {

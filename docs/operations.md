@@ -128,11 +128,91 @@ not per model turn. Publication retries reuse the existing PR without rewriting
 its configuration snapshot. No additional repository variables or permissions
 are required.
 
+**Observed agent models** separately lists the distinct concrete model IDs
+reported in available primary-agent token-usage records. The workflow post-step
+reads the `model` field from
+`/tmp/gh-aw/sandbox/firewall/logs/api-proxy-logs/token-usage.jsonl`, the same
+structured source used by the
+[pinned gh-aw usage parser](https://github.com/github/gh-aw/blob/v0.88.7/actions/setup/js/parse_mcp_gateway_log.cjs).
+The workflow summary and `sdlc-cost` receipt include up to 20 unique IDs per run.
+The controller retains them during partial cost recovery and accumulates them
+when costs settle, including retries, failed runs, and superseded plans. This
+does not change credit totals, limits, or result acceptance.
+PR and status displays show at most 20 model IDs plus a remaining count; the
+complete captured set stays in `spend.models`.
+
+`auto` and `unknown` are not concrete model IDs. Missing, unreadable, oversized,
+or invalid model telemetry yields no model observation and cannot turn measured
+credits into an accounting failure. The report says `unavailable` when no
+concrete model is recorded. Legacy receipts remain readable but are not
+backfilled. An observed list is informational, not a complete per-run history or
+a per-model billing breakdown: missing/legacy runs and separate threat-detection
+inference are outside its coverage. Models may vary with automatic selection;
+the configuration snapshot must not be interpreted as one resolved model for
+every stage.
+
 The totals are also a snapshot at PR creation. Any pending cost entries are
 explicitly counted and excluded from those totals, not represented as free runs.
 Publication does not wait for them. Follow the linked epic's lifecycle status
-for later settlement, including after PR closure or merge; an existing PR body
-is not rewritten when receipts recover.
+for later settlement and observed models, including after PR closure or merge;
+an existing PR body is not rewritten when receipts recover.
+
+### Retained Model Usage
+
+Settled attribution is stored in the lifecycle's optional `usageHistory` array
+on `sdlc-state`, not just in the aggregate Cost display or expiring Actions
+artifacts. There is at most one entry per registered job, bounded to 100 entries
+by the supported job budget. The controller binds identity from its registered
+job; the receipt cannot supply a stage, persona, task, plan, or approval.
+
+| Field | Collected meaning |
+| --- | --- |
+| `job.id`, `job.stage`, `persona` | Original job, assigned stage, and `sdlc-<stage>` role; `persona: null` for deterministic `scan` and `validate` |
+| `job.taskId`, `job.attempt` | Original task and dispatch-attempt counter when known; old pending records may omit them |
+| `job.runId`, `job.createdAt` | Matched Actions run, when discovered, and original job creation time; only first-attempt Actions runs are eligible |
+| `job.inputSha`, `job.controlSha`, `job.planHash` | Original source, trusted workflow revision, and registered plan hash, which can be null before planning |
+| `observed.requestedModel` | Workflow-time configured selector, such as `auto`, distinct from the PR-time configuration snapshot |
+| `observed.models` | Available concrete model IDs, including multiple models within one primary-agent run |
+| `observed.tokenUsage` | Telemetry status and per-model request, input, output, cache-read, and cache-write token counts |
+| `observed.credits`, `observed.runnerMs` | Existing measured primary-agent credits and workflow runner time, not per-model billing allocations |
+| `acceptedResult.outcome`, `acceptedResult.outputSha` | Controller-accepted report outcome and resulting commit; absent when no acceptance was recorded |
+
+Token telemetry is `available`, `partial`, or `unavailable`. Counts are summed
+from structured usage records per model, deduplicating repeated nonempty request
+IDs. Without an ID, each record is counted. Missing or invalid token fields
+make that model's corresponding total `null`, not zero. Malformed records and
+the 20-model capture cap make usable telemetry partial. Counts preserve runtime
+semantics; input and cache counts can overlap and must not be naively added or
+converted into charges. The existing credit calculation is unchanged.
+
+Partial cost recovery retains the first observed requested selector and the
+best single token snapshot, preferring available over partial telemetry, then
+more observed requests. Repeated snapshots are never summed together. Empty or
+degraded reads cannot erase better telemetry. A missing model/token field does
+not extend cost collection or block an otherwise valid result.
+
+Settlement saves the ledger entry, cost tally, and pending-entry removal or
+active cost marker in the same SHA-checked update. Interrupted writes and lost
+acknowledgements cannot duplicate attribution or charges. Expired or permanently
+unavailable accounting retains the known job identity even with no observations.
+Accepted-result metadata is kept with pending costs when result acceptance
+precedes settlement. Failed workflows and stale results never acquire accepted
+metadata merely because they consumed tokens.
+
+This is historical accounting, not active gate evidence or proof that the
+persona instructions were followed. It survives source changes and replanning
+but cannot authorize work or resurrect old evidence. No adversarial selection,
+cross-lab policy, or originating-lab catalog is implemented. Inference still
+uses the existing `SDLC_MODEL` setting. Separate threat-detection inference and
+fine-grained tool/subagent attribution remain outside this primary-agent scope.
+
+Older receipts and state load unchanged. Old aggregate model lists cannot be
+reconstructed into job attribution, and already-costed runs are not reread for
+backfill. Missing history or absent token fields must not be treated as zero
+usage or proof of model diversity. `spend.historyComplete` describes credit
+accounting, not model/token-history completeness. Deploy the controller and
+generated workflow together after draining old runs, and preserve these optional
+fields in rollbacks because older strict readers reject them.
 
 ## 2. Configure Environments
 
@@ -535,6 +615,20 @@ jobs already discarded by older code or safely retry receipts already marked
 `job.costedRun`; existing totals and history flags are preserved, not backfilled.
 Older strict version-2 readers reject this field, so drain older runs before
 deployment and retain `pendingCosts` support in any rollback.
+
+Observed-model reporting adds optional `models` arrays to cost receipts,
+pending observations, and `spend`, without changing the state version. Records
+without them load unchanged; model history is not inferred or backfilled.
+Deploy the controller and recompiled agent workflow together after draining
+older runs, and preserve these fields in any rollback because older strict
+readers reject them. Model availability does not change `historyComplete`,
+which describes cost accounting, not completeness of the model list.
+
+The collection-only attribution extension adds optional `usageHistory`,
+`requestedModel`, `tokenUsage`, and accepted-result metadata, plus optional task
+and dispatch-attempt fields on retained identities. Version 2 remains unchanged;
+legacy records are not backfilled. All of these fields require upgraded readers
+on the controller and workers, including during rollback.
 
 For an existing installation:
 

@@ -118,20 +118,67 @@ post-steps:
       CREDITS: ${{ steps.parse-mcp-gateway.outputs.aic }}
       PREEMPTED: ${{ steps.parse-mcp-gateway.outputs.ai_credits_rate_limit_error }}
       CREDIT_LIMIT: ${{ needs.budget.outputs.credit_limit }}
+      REQUESTED_MODEL: ${{ vars.SDLC_MODEL || 'auto' }}
+      TOKEN_USAGE_PATH: /tmp/gh-aw/sandbox/firewall/logs/api-proxy-logs/token-usage.jsonl
     run: |
       node --input-type=module <<'NODE'
-      import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+      import { appendFileSync, closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
       const rawCredits = process.env.CREDITS ?? '';
       const reportedCredits = rawCredits.trim() === '' ? NaN : Number(rawCredits);
       const credits = Number.isFinite(reportedCredits) && reportedCredits >= 0 && reportedCredits <= 100000 ? reportedCredits : null;
       const preempted = process.env.PREEMPTED === 'true' ? true : process.env.PREEMPTED === 'false' ? false : null;
       const creditLimit = Number(process.env.CREDIT_LIMIT);
       if (!Number.isSafeInteger(creditLimit) || creditLimit < 1 || creditLimit > 10000) throw new Error('Invalid captured credit limit');
+      const validModel = model => typeof model === 'string' && model.trim() === model &&
+        /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model);
+      const requestedModel = validModel(process.env.REQUESTED_MODEL) ? process.env.REQUESTED_MODEL : undefined;
+      const observedModels = new Map();
+      const seenRequests = new Set();
+      const tokenFields = [['inputTokens', 'input_tokens'], ['outputTokens', 'output_tokens'],
+        ['cacheReadTokens', 'cache_read_tokens'], ['cacheWriteTokens', 'cache_write_tokens']];
+      let partial = false;
+      let descriptor;
+      try {
+        descriptor = openSync(process.env.TOKEN_USAGE_PATH, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const metadata = fstatSync(descriptor);
+        if (metadata.isFile() && metadata.size <= 5_000_000) {
+          for (const line of readFileSync(descriptor, 'utf8').split('\n')) {
+            if (!line.trim()) continue;
+            let entry;
+            try { entry = JSON.parse(line); } catch { partial = true; continue; }
+            if (entry?.event !== undefined && entry.event !== 'token_usage') continue;
+            if (!validModel(entry?.model) || ['auto', 'unknown'].includes(entry.model.toLowerCase())) {
+              partial = true;
+              continue;
+            }
+            const requestId = typeof entry.request_id === 'string' ? entry.request_id.trim() : '';
+            if (requestId && seenRequests.has(requestId)) continue;
+            if (requestId) seenRequests.add(requestId);
+            const usage = observedModels.get(entry.model) ?? { model: entry.model, requests: 0,
+              ...Object.fromEntries(tokenFields.map(([field]) => [field, 0])) };
+            usage.requests += 1;
+            for (const [field, source] of tokenFields) {
+              const value = entry[source];
+              const total = Number.isSafeInteger(value) ? usage[field] + value : null;
+              usage[field] = usage[field] !== null && Number.isSafeInteger(value) && value >= 0 &&
+                Number.isSafeInteger(total) ? total : null;
+              if (usage[field] === null) partial = true;
+            }
+            observedModels.set(entry.model, usage);
+          }
+        }
+      } catch { partial = true; } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+      }
+      const models = [...observedModels.keys()].sort().slice(0, 20);
+      const tokenUsage = { status: models.length ? partial || observedModels.size > 20 ? 'partial' : 'available' : 'unavailable',
+        models: models.map(model => observedModels.get(model)) };
       mkdirSync('.sdlc-cost', { recursive: true });
-      writeFileSync('.sdlc-cost/cost.json', JSON.stringify({ credits, preempted, creditLimit }) + '\n');
+      writeFileSync('.sdlc-cost/cost.json', JSON.stringify({ credits, preempted, creditLimit, requestedModel, models, tokenUsage }) + '\n');
       appendFileSync(process.env.GITHUB_STEP_SUMMARY,
         `Per-inference-job credit limit: ${creditLimit} AI credits\n\n` +
-        `Measured usage: ${credits === null ? 'unavailable' : credits + ' AI credits'}; pre-emption signal: ${preempted === null ? 'unknown' : preempted}.\n`);
+        `Measured usage: ${credits === null ? 'unavailable' : credits + ' AI credits'}; pre-emption signal: ${preempted === null ? 'unknown' : preempted}.\n\n` +
+        `Observed agent models: ${models.length ? models.join(', ') : 'unavailable'}. Token telemetry: ${tokenUsage.status}.\n`);
       NODE
   - name: Return the workflow-measured cost
     if: always()

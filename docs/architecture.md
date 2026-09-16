@@ -49,7 +49,7 @@ flowchart TD
         ArchContext["Repository and allowlisted documentation"]
     end
     subgraph ArchRecords["GitHub records and outputs"]
-        ArchState[("Protected sdlc-state and pending costs")]
+        ArchState[("Protected lifecycle, pending costs, and usage history")]
         ArchArtifacts[("Actions result, evidence, and cost artifacts")]
         ArchBranch[("Versioned feature branch")]
         ArchTasks["Native sub-issues and dependencies"]
@@ -317,7 +317,7 @@ sequenceDiagram
     opt Pending accounting from previous jobs
     HwControl->>HwActions: Find retained job using its original identity and bound run ID
     HwControl->>HwArtifacts: Read costs only when the run has completed
-    HwControl->>HwState: Settle once or retain until the fixed collection deadline
+    HwControl->>HwState: Settle attributed usage once or retain until the fixed deadline
     Note over HwControl,HwState: Accounting never reads or accepts old worker results
     end
   HwControl->>HwState: Persist job, source SHA, control SHA, and plan hash
@@ -338,7 +338,7 @@ sequenceDiagram
   HwWorker->>HwWorker: Execute assigned role or deterministic checks
   HwWorker->>HwArtifacts: Upload sdlc-result and supporting evidence
   HwWorker-->>HwActions: Workflow concludes
-  HwActions->>HwArtifacts: Upload workflow-measured sdlc-cost with applied credit limit
+  HwActions->>HwArtifacts: Upload sdlc-cost with limit, selector, observed models, and token counts
   HwActions-)HwControl: workflow_run completion event
   HwControl->>HwActions: Discover expected workflow, actor, revision, and run
   HwActions-->>HwControl: Matching first-attempt run metadata
@@ -359,12 +359,12 @@ sequenceDiagram
     HwControl->>HwIssue: Publish idempotent attempt diagnostics
     end
     alt Complete measured receipt
-    HwControl->>HwState: Charge once and finalize cost marker, accepted or not
+    HwControl->>HwState: Charge once, append job and persona usage, and finalize cost marker
     else Incomplete telemetry within collection window
     HwControl->>HwState: Retain identity, observed values, and fixed deadline without charging
     else Incomplete telemetry past collection deadline
     HwControl->>HwIssue: Report unavailable telemetry and stop collection
-    HwControl->>HwState: Charge observed values once and mark incomplete history
+    HwControl->>HwState: Retain attributed usage, charge observed values, and mark incomplete history
     end
     alt Workflow permits result acceptance
     HwControl->>HwArtifacts: Download exactly one eligible result artifact
@@ -376,6 +376,7 @@ sequenceDiagram
         HwBranch-->>HwControl: Accepted commit SHA
         HwControl->>HwControl: Invalidate older evidence
             end
+        HwControl->>HwState: Annotate usage with accepted outcome and resulting commit
         HwControl->>HwState: Record stage result and next phase, retaining unresolved costs
         else Accepted changes_requested result
         HwControl->>HwState: Store findings and bounded repair transition
@@ -397,6 +398,10 @@ The adapter selects the expected worker file from the registered stage:
 All seven agent stages select the inference model at workflow runtime from the
 repository variable `SDLC_MODEL`, falling back to `auto` when it is unset or
 empty. The model choice does not change worker permissions or result acceptance.
+The configured selector is distinct from concrete model IDs reported by runtime
+token-usage telemetry. Available observations are informational cost metadata;
+`auto` is never treated as a resolved identity and need not select the same model
+for every stage or inference.
 
 The credential-free `budget` job validates `SDLC_AIC_CREDIT_LIMIT` after
 activation, defaulting to `250` when unset or empty. It accepts decimal integers
@@ -551,7 +556,7 @@ flowchart TD
     RecoveryRevise["Retain unsettled costs, snapshot scope and retire tasks"]
     RecoveryResearch["researching: new plan requires approval"]
     RecoveryAccounting["Reconcile pending costs in every phase"]
-    RecoverySettled["Settle once without accepting old results"]
+    RecoverySettled["Retain attributed usage and settle once without accepting old results"]
     RecoveryPartial["Record observed values and warn of incomplete history"]
 
     RecoveryActive -->|"Pause or cancel request"| RecoveryInvalidate
@@ -716,6 +721,7 @@ flowchart LR
 | Task | Bounded work item in the approved plan's dependency graph |
 | Job | One registered attempt to execute a stage against a commit |
 | Pending cost | Original job identity, fixed expiry, and optional observed measurements; not execution authority |
+| Usage history | Settled job/persona attribution, observed model/token metadata, and any recorded accepted-result commit; not gate evidence |
 | Evidence | Accepted stage summary and run reference for one commit |
 | Feature PR | Published integrated feature, awaiting normal human review |
 
@@ -738,6 +744,22 @@ the maximum supported lifecycle job budget. Records without it remain valid
 without resets or a migration write. Entries reject unexpected authority fields
 and duplicate job IDs, and the field is removed when the queue empties. Older
 strict version-2 readers do not support this extension; rollback must preserve it.
+
+Optional `models` arrays extend cost receipts, pending observations, and `spend`.
+They hold bounded concrete model IDs, with up to 20 IDs captured per run and
+2,000 accumulated across the maximum 100 jobs. Legacy records load without them
+and are not backfilled. Older strict readers reject these fields too, so the
+controller and compiled workflow must be deployed together after draining old
+runs, and rollback must retain model-field support. Model availability is not a
+new migration or acceptance condition.
+
+Optional `usageHistory` retains up to 100 unique registered jobs and rejects
+duplicate known run IDs or mismatched stage/persona pairs. Retained identities
+can also include the task and dispatch-attempt counter. Optional receipt fields
+`requestedModel` and `tokenUsage` preserve selector and token observations.
+Pending and settled records may include controller-accepted result metadata.
+Existing records without these fields load unchanged; no history is inferred
+from aggregate totals. Deployment and rollback must retain the upgraded readers.
 
 The storage adapter returns a transient `needsMigration` flag alongside the
 original file SHA. Only the controller saves the upgrade, before any command,
@@ -762,8 +784,10 @@ Deploy only after older controller and worker runs are idle, following
 | `job.inputSha` | Source commit supplied to a particular worker |
 | `job.runId` | Accepted GitHub run for the registered job |
 | `spend` | Cumulative recorded runner time and AI credits |
+| `spend.models` | Optional distinct concrete model IDs observed in settled primary-agent receipts; informational, not a complete model history |
 | `spend.historyComplete` | `false` when historical or finalized cost telemetry is unavailable |
 | `pendingCosts` | Unsettled original job identities, fixed collection deadlines, and optional observed values excluded from totals |
+| `usageHistory` | Durable per-job stage/persona, model and token observations, original bindings, and any accepted outcome/output commit |
 
 At initialization, approval, and replanning, baseline and controller SHAs are
 captured from the default branch. `baseSha` then remains fixed while the
@@ -809,13 +833,31 @@ after a failed write or lost acknowledgement cannot double count. This includes
 rejected and failed results, cancelled workers, and superseded plans. Unlike
 evidence, costs survive a change of head commit or plan.
 
+The same settlement write appends a `usageHistory` entry with a copied original
+job identity and its assigned persona, derived by the controller rather than
+the receipt. Repeated settlement of the same identity is a no-op; conflicting
+identities or duplicated known run IDs are rejected. Missing observations are
+omitted, never synthesized from current settings. Jobs that were never
+discovered retain identity without a fabricated run ID or charge. The history
+survives pending cleanup, replanning, source changes, and artifact expiry.
+
+Normal result acceptance separately annotates its pending or settled usage with
+`acceptedResult` (outcome and resulting commit). Rejected or stale results and
+failed agent workflows are not annotated. Accounting never reads an abandoned
+result to fill this field, and historical accepted results never replace
+current-commit gate evidence. No routing or diversity policy consumes the ledger.
+
 Before clearing a dispatched, uncosted job, interruption and replanning retain
 its ID, stage, original source and trusted revision, plan hash, creation time,
 and any discovered run ID in `pendingCosts`. Incomplete receipts also retain
 their observed values there even when the stage advances. Pending observations
 are not yet included in totals. Repeated observations preserve known values,
 use the largest observed runner duration rather than summing repeated reads,
-and retain an observed credit-limit snapshot when later reads omit it.
+and retain an observed credit-limit snapshot and concrete model IDs when later
+reads omit them. Model IDs are deduplicated and sorted, not counted as new runs.
+The first observed requested selector is retained. Token observations use a
+single best snapshot, preferring available over partial and then more requests;
+retries never add snapshots together or erase a better one with missing data.
 
 Every reconciliation processes abandoned accounting before terminal-state
 returns, matching the original workflow, actor, revision, job, and first run
@@ -843,6 +885,36 @@ on publication retries, even if repository variables or settled costs have
 since changed. Totals are also labeled as a creation-time snapshot, with pending
 jobs explicitly excluded and a link to the issue's updating lifecycle status.
 Pending accounting does not delay an otherwise eligible publication.
+
+The Cost section also lists **Observed agent models**, independently of the
+configuration snapshot. The post-step reads concrete `model` IDs from the
+primary agent's structured `token-usage.jsonl`, rather than from agent prose or
+the configured selector. Missing/unreadable logs, malformed records, oversized
+files, `auto`, and `unknown` cannot invent a concrete model. Logs are opened as
+regular non-symlink files, limited to 5 MB, and model IDs are restricted to bounded
+display-safe text. No usable IDs means `unavailable`. These runtime observations
+are diagnostic metadata, not attestation, acceptance evidence, or billing truth.
+They do not alter credit calculations, retry deadlines, or gates. Model history
+is not backfilled, and absence does not change `spend.historyComplete`.
+
+The post-step also captures the workflow's configured selector in
+`requestedModel` and per-model request/input/output/cache-read/cache-write
+counts in `tokenUsage`, without changing AI-credit calculations. Repeated
+nonempty request IDs are counted once. Malformed records, missing/invalid
+counts, or the 20-model cap make telemetry partial; a missing count is `null`,
+not measured zero. No concrete models means unavailable telemetry. Counters
+preserve the runtime's cache semantics, which can overlap with input counts;
+they are not normalized across labs or translated into per-model billing.
+The 10 KB receipt limit remains unchanged. Token availability is not a new
+stage gate or a reason to extend collection deadlines.
+
+Model lists cover available settled primary-agent receipts, not all inference:
+legacy/missing telemetry and the separate threat detector are not covered.
+Several models may appear, including with automatic selection. The PR model
+list is also fixed at creation; issue status reflects later settlements. Displays
+show at most 20 IDs plus a remaining count, without dropping the accumulated
+set from state. This is
+not a per-model cost breakdown or a guarantee of model diversity across reviews.
 
 New lifecycles and migrated version-1 cost ledgers have
 `spend.historyComplete: true`. A version-1 record without `spend` starts with
@@ -910,6 +982,7 @@ a gate; being near the cap alone must not invalidate a completed review.
 | Consecutive infrastructure failures before blocking | 2 |
 | Total registered jobs per lifecycle | 40 |
 | Deferred cost collection window | 90 minutes from first deferral |
+| Retained usage history | Up to 100 registered jobs; up to 20 models per receipt |
 | Changed files per proposal | 30 |
 | Total proposed text bytes | 512,000 |
 | AI credits per inference job | `SDLC_AIC_CREDIT_LIMIT`, default 250 |
@@ -922,7 +995,8 @@ a gate; being near the cap alone must not invalidate a completed review.
 Limits come from [policy](../.github/sdlc/policy.json), the workflow sources,
 and the validated `SDLC_AIC_CREDIT_LIMIT` repository-variable override.
 State history and issue/PR summaries retain evidence links, not perpetual copies
-of expired artifacts. Actions minutes and aggregate inference usage need
+of expired artifacts. The usage ledger retains captured accounting fields, not
+raw prompts, responses, or token logs. Actions minutes and aggregate inference usage need
 separate billing controls.
 
 ## Trust Boundaries and Scope

@@ -1,4 +1,5 @@
 import { digest, type Approval, type Phase, type Plan } from './domain.ts';
+import type { Cost, Report } from './contracts.ts';
 
 export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review';
 
@@ -34,14 +35,24 @@ export interface Spend {
   nearLimit: number;
   preempted: number;
   historyComplete: boolean;
+  models?: string[];
 }
 
-export type JobIdentity = Pick<Job, 'id' | 'stage' | 'inputSha' | 'controlSha' | 'planHash' | 'createdAt' | 'runId'>;
+export type JobIdentity = Pick<Job, 'id' | 'stage' | 'inputSha' | 'controlSha' | 'planHash' | 'createdAt' | 'runId'> &
+  Partial<Pick<Job, 'taskId' | 'attempt'>>;
 
 export interface PendingCost {
   job: JobIdentity;
   expiresAt: string;
-  observed?: { runnerMs: number; credits: number | null; preempted: boolean | null; creditLimit?: number };
+  observed?: Cost & { runnerMs: number };
+  acceptedResult?: { outcome: Report['outcome']; outputSha: string };
+}
+
+export interface UsageRecord {
+  job: JobIdentity;
+  persona: string | null;
+  observed?: PendingCost['observed'];
+  acceptedResult?: PendingCost['acceptedResult'];
 }
 
 export interface Evidence {
@@ -76,6 +87,7 @@ export interface Lifecycle {
   failures: number;
   spend: Spend;
   pendingCosts?: PendingCost[];
+  usageHistory?: UsageRecord[];
   feedback: string;
   resumePhase?: Phase;
   error?: string;
@@ -100,7 +112,7 @@ export function deferCost(state: Lifecycle, job: Job, expiresAt: string, observe
   let pending = state.pendingCosts.find(item => item.job.id === job.id);
   if (!pending) {
     pending = { job: { id: job.id, stage: job.stage, inputSha: job.inputSha, controlSha: job.controlSha,
-      planHash: job.planHash, createdAt: job.createdAt }, expiresAt };
+      planHash: job.planHash, createdAt: job.createdAt, taskId: job.taskId, attempt: job.attempt }, expiresAt };
     state.pendingCosts.push(pending);
   }
   if (job.runId !== undefined) pending.job.runId = job.runId;
@@ -114,6 +126,15 @@ export function observeCost(pending: PendingCost, cost: NonNullable<PendingCost[
   pending.observed = { ...cost, runnerMs: Math.max(cost.runnerMs, previous?.runnerMs ?? 0),
     credits: cost.credits ?? previous?.credits ?? null, preempted: cost.preempted ?? previous?.preempted ?? null };
   if (creditLimit !== undefined) pending.observed.creditLimit = creditLimit;
+  const requestedModel = previous?.requestedModel ?? cost.requestedModel;
+  if (requestedModel !== undefined) pending.observed.requestedModel = requestedModel;
+  const snapshots = [previous?.tokenUsage, cost.tokenUsage].filter(snapshot => snapshot !== undefined);
+  const ranks = { unavailable: 0, partial: 1, available: 2 };
+  snapshots.sort((left, right) => ranks[right.status] - ranks[left.status] ||
+    right.models.reduce((total, model) => total + model.requests, 0) - left.models.reduce((total, model) => total + model.requests, 0));
+  if (snapshots[0]) pending.observed.tokenUsage = structuredClone(snapshots[0]);
+  const models = [...new Set([...previous?.models ?? [], ...cost.models ?? []])].sort().slice(0, 20);
+  if (models.length) pending.observed.models = models;
 }
 
 export function forgetCost(state: Lifecycle, jobId: string): void {
@@ -123,18 +144,50 @@ export function forgetCost(state: Lifecycle, jobId: string): void {
 }
 
 // A run the limiter pre-empted is counted only as pre-empted: the two outcomes are exclusive.
-export function recordSpend(state: Lifecycle, cost: {
-  runnerMs: number; credits: number | null; preempted: boolean | null; creditLimit?: number;
-}, maxCredits: number): void {
+export function recordSpend(state: Lifecycle, cost: NonNullable<PendingCost['observed']>, maxCredits: number): void {
   const creditLimit = cost.creditLimit ?? maxCredits;
   state.spend.runs += 1;
   state.spend.runnerMs += Math.max(0, cost.runnerMs);
   state.spend.credits += Math.max(0, cost.credits ?? 0);
+  if (cost.models?.length) state.spend.models = [...new Set([...state.spend.models ?? [], ...cost.models])].sort();
   if (cost.credits === null || cost.preempted === null) state.spend.historyComplete = false;
   if (cost.preempted) state.spend.preempted += 1;
   else if (cost.preempted === false && cost.credits !== null && creditLimit > 0 && cost.credits >= creditLimit * 0.8) {
     state.spend.nearLimit += 1;
   }
+}
+
+export function settleCost(state: Lifecycle, pending: PendingCost, maxCredits: number): void {
+  const existing = state.usageHistory?.find(record => record.job.id === pending.job.id);
+  if (existing) {
+    for (const key of ['stage', 'inputSha', 'controlSha', 'planHash', 'createdAt', 'runId', 'taskId', 'attempt'] as const) {
+      if (existing.job[key] !== pending.job[key]) throw new Error('Settled cost job identity changed');
+    }
+    return;
+  }
+  if (pending.job.runId !== undefined && state.usageHistory?.some(record => record.job.runId === pending.job.runId)) {
+    throw new Error('Usage run already belongs to another job');
+  }
+  const persona = ['scan', 'validate'].includes(pending.job.stage) ? null : `sdlc-${pending.job.stage}`;
+  state.usageHistory ??= [];
+  state.usageHistory.push({ job: { ...pending.job }, persona,
+    ...(pending.observed ? { observed: structuredClone(pending.observed) } : {}),
+    ...(pending.acceptedResult ? { acceptedResult: { ...pending.acceptedResult } } : {}) });
+  if (pending.observed) recordSpend(state, pending.observed, maxCredits);
+}
+
+export function recordUsageResult(state: Lifecycle, job: Job, outcome: Report['outcome'], outputSha: string): void {
+  const record = state.usageHistory?.find(item => item.job.id === job.id) ??
+    state.pendingCosts?.find(item => item.job.id === job.id);
+  if (record && record.job.runId === job.runId && record.job.inputSha === job.inputSha) {
+    record.acceptedResult = { outcome, outputSha };
+  }
+}
+
+export function formatObservedModels(models: readonly string[] = []): string {
+  if (!models.length) return 'unavailable';
+  const displayed = models.slice(0, 20).map(model => `\`${model}\``).join(', ');
+  return displayed + (models.length > 20 ? ` (+${models.length - 20} more recorded)` : '');
 }
 
 export function validateTasks(tasks: Task[], maximum: number): void {

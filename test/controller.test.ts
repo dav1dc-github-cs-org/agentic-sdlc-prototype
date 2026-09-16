@@ -228,6 +228,7 @@ test('legacy waiting and terminal lifecycles are migrated once without restartin
   for (const phase of ['awaiting_approval', 'paused', 'pr_open', 'merged', 'cancelled'] as const) {
     const { platform, controller } = await planned();
     const state = platform.stored!.state;
+    delete state.usageHistory;
     state.phase = phase;
     if (phase === 'pr_open') state.prNumber = 126;
     platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
@@ -249,6 +250,7 @@ test('legacy waiting and terminal lifecycles are migrated once without restartin
 test('controller persists migration before PR effects and retries a failed state write', async () => {
   const { platform, controller } = await planned();
   const state = platform.stored!.state;
+  delete state.usageHistory;
   state.phase = 'pr_open';
   state.prNumber = 126;
   const legacy = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
@@ -271,6 +273,7 @@ test('controller persists migration before PR effects and retries a failed state
 test('migrating a legacy plan does not authorize an untrusted approval command', async () => {
   const { platform, controller } = await planned();
   const state = platform.stored!.state;
+  delete state.usageHistory;
   platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
   const dispatched = platform.dispatched.length;
   platform.reply('/sdlc approve v1', 'stranger');
@@ -287,6 +290,7 @@ test('migrating a legacy plan does not authorize an untrusted approval command',
 test('legacy migration cannot bypass the trusted-revision gate or accept an old job', async () => {
   const { platform, controller } = await coding();
   const state = platform.stored!.state;
+  delete state.usageHistory;
   const job = state.job!;
   platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
   platform.baselineSha = 'b'.repeat(40);
@@ -487,10 +491,15 @@ test('revision invalidates approval and rejects approval of the old version', as
 
 test('complete lifecycle rescans test changes and publishes exactly one final PR', async () => {
   const { platform, controller } = await coding();
+  const firstJob = platform.stored!.state.job!;
   assert.equal(platform.stored!.state.job!.taskId, 'first');
   platform.finish({ changes: [{ path: 'feature.txt', content: 'First' }] });
   await controller.tick(123);
   assert.equal(platform.stored!.state.job!.taskId, 'second');
+  const firstUsage = platform.stored!.state.usageHistory!.find(record => record.job.id === firstJob.id)!;
+  assert.equal(firstUsage.job.inputSha, firstJob.inputSha);
+  assert.equal(firstUsage.job.taskId, 'first');
+  assert.deepEqual(firstUsage.acceptedResult, { outcome: 'pass', outputSha: platform.stored!.state.headSha });
   platform.finish({ changes: [{ path: 'feature.txt', content: 'Both tasks' }] });
   await controller.tick(123);
   for (const stage of ['scan', 'security']) {
@@ -509,6 +518,12 @@ test('complete lifecycle rescans test changes and publishes exactly one final PR
   }
   assert.equal(platform.published, 1);
   assert.equal(platform.stored!.state.phase, 'pr_open');
+  const history = platform.stored!.state.usageHistory!;
+  assert.deepEqual(history.map(record => record.job.stage),
+    ['research', 'decompose', 'code', 'code', 'scan', 'security', 'test', 'scan', 'security', 'validate', 'document', 'review']);
+  assert.ok(history.every(record => record.acceptedResult?.outcome === 'pass'));
+  assert.equal(history.find(record => record.job.stage === 'scan')!.persona, null);
+  assert.deepEqual(history.find(record => record.job.id === firstJob.id), firstUsage);
   await controller.tick(123);
   assert.equal(platform.published, 1);
   platform.disposition = 'merged';
@@ -655,12 +670,13 @@ test('cancelled, paused, and superseded jobs settle costs after reload without a
     platform.runs.set(job.id, { ...run, status: 'completed', conclusion: 'success' });
     platform.reports.set(run.id, { jobId: job.id, inputSha: job.inputSha, outcome: 'pass', summary: 'Old work',
       changes: [{ path: 'feature.txt', content: 'Must never be accepted' }] });
-    platform.costs = [{ runnerMs: 120_000, credits: 42, preempted: false }];
+    platform.costs = [{ runnerMs: 120_000, credits: 42, preempted: false, models: ['claude-sonnet-4.6'] }];
     platform.report = async () => { throw new Error('Accounting must never read old results'); };
     await new Controller(platform, policy).tick(123);
     const settled = platform.stored!.state;
     assert.deepEqual(settled.spend, { ...before.spend, runs: before.spend.runs + 1,
-      runnerMs: before.spend.runnerMs + 120_000, credits: before.spend.credits + 42 });
+      runnerMs: before.spend.runnerMs + 120_000, credits: before.spend.credits + 42, models: ['claude-sonnet-4.6'] });
+    assert.match(platform.outputs.get('status')!, /Observed agent models: `claude-sonnet-4\.6`/);
     assert.equal(settled.pendingCosts, undefined);
     assert.equal(settled.phase, interrupted.phase);
     assert.deepEqual(settled.job, interrupted.job);
@@ -668,8 +684,15 @@ test('cancelled, paused, and superseded jobs settle costs after reload without a
     assert.deepEqual(settled.evidence, interrupted.evidence);
     assert.equal(platform.changed, 0);
     assert.equal(platform.published, 0);
+    const usage = settled.usageHistory!.find(record => record.job.id === job.id)!;
+    assert.deepEqual(usage.job, { id: job.id, stage: job.stage, taskId: job.taskId, attempt: job.attempt,
+      inputSha: job.inputSha, controlSha: job.controlSha, planHash: job.planHash, createdAt: job.createdAt, runId: run.id });
+    assert.equal(usage.persona, 'sdlc-code');
+    assert.deepEqual(usage.observed?.models, ['claude-sonnet-4.6']);
+    assert.equal(usage.acceptedResult, undefined);
     await new Controller(platform, policy).tick(123);
     assert.deepEqual(platform.stored!.state.spend, settled.spend);
+    assert.deepEqual(platform.stored!.state.usageHistory, settled.usageHistory);
     assert.equal(platform.charged.filter(runId => runId === run.id).length, 1);
   }
 });
@@ -681,7 +704,7 @@ test('late receipts recover after a stage advances or its result retries, with e
     const job = before.job!;
     platform.finish();
     const run = platform.runs.get(job.id)!;
-    platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null }];
+    platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null, models: ['gpt-5.4'] }];
     if (retryResult) platform.reportFailure = new RetryablePlatformError('Result is not yet visible');
     const first = new Controller(platform, policy).tick(123);
     if (retryResult) await assert.rejects(first, /Result is not yet visible/);
@@ -694,11 +717,19 @@ test('late receipts recover after a stage advances or its result retries, with e
     await new Controller(platform, policy).tick(123);
     const settled = platform.stored!.state;
     assert.deepEqual(settled.spend, { ...before.spend, runs: before.spend.runs + 1,
-      runnerMs: before.spend.runnerMs + 120_000, credits: before.spend.credits + 42, nearLimit: before.spend.nearLimit + 1 });
+      runnerMs: before.spend.runnerMs + 120_000, credits: before.spend.credits + 42, nearLimit: before.spend.nearLimit + 1,
+      models: ['gpt-5.4'] });
+    assert.match(platform.outputs.get('status')!, /Observed agent models: `gpt-5\.4`/);
     assert.equal(settled.pendingCosts, undefined);
     assert.notEqual(settled.job?.id, job.id);
+    const usage = settled.usageHistory!.find(record => record.job.id === job.id)!;
+    assert.equal(usage.persona, 'sdlc-code');
+    assert.equal(usage.job.runId, run.id);
+    assert.deepEqual(usage.observed?.models, ['gpt-5.4']);
+    assert.deepEqual(usage.acceptedResult, { outcome: 'pass', outputSha: job.inputSha });
     await new Controller(platform, policy).tick(123);
     assert.deepEqual(platform.stored!.state.spend, settled.spend);
+    assert.deepEqual(platform.stored!.state.usageHistory, settled.usageHistory);
     assert.equal(platform.charged.filter(runId => runId === run.id).length, 2);
   }
 });
@@ -845,7 +876,7 @@ test('pending settlement survives rejected state writes and lost committed ackno
     platform.costs = [{ runnerMs: 60_000, credits: null, preempted: null }];
     platform.finish({ plan: 'Implement the feature.' });
     await new Controller(platform, policy).tick(123);
-    const cost = { runnerMs: 120_000, credits: 42, preempted: false, creditLimit: 50 };
+    const cost = { runnerMs: 120_000, credits: 42, preempted: false, creditLimit: 50, models: ['gpt-5.4'] };
     platform.costs = [cost, cost];
     const save = platform.save.bind(platform);
     let interrupted = false;
@@ -860,13 +891,18 @@ test('pending settlement survives rejected state writes and lost committed ackno
     await assert.rejects(new Controller(platform, policy).tick(123), /Settlement write interrupted/);
     assert.equal(platform.stored!.state.spend.runs, committed ? 1 : 0);
     assert.equal(platform.stored!.state.pendingCosts?.length ?? 0, committed ? 0 : 1);
+    assert.equal(platform.stored!.state.usageHistory?.length ?? 0, committed ? 1 : 0);
     await new Controller(platform, policy).tick(123);
     const state = platform.stored!.state;
     assert.equal(state.pendingCosts, undefined);
     assert.deepEqual(state.spend, { runs: 1, runnerMs: 120_000, credits: 42,
-      nearLimit: 1, preempted: 0, historyComplete: true });
+      nearLimit: 1, preempted: 0, historyComplete: true, models: ['gpt-5.4'] });
+    assert.equal(state.usageHistory!.length, 1);
+    assert.equal(state.usageHistory![0]!.persona, 'sdlc-research');
+    assert.deepEqual(state.usageHistory![0]!.observed, cost);
     await new Controller(platform, policy).tick(123);
     assert.deepEqual(platform.stored!.state.spend, state.spend);
+    assert.deepEqual(platform.stored!.state.usageHistory, state.usageHistory);
     assert.equal(platform.charged.length, committed ? 2 : 3);
   }
 });
@@ -1029,7 +1065,7 @@ test('migrated in-flight jobs preserve cost history and charge each run only onc
     platform.reportFailure = new RetryablePlatformError('Artifact not yet available');
     if (measured) await assert.rejects(controller.tick(123), error => error === platform.reportFailure);
     const state = platform.stored!.state;
-    platform.raw = JSON.stringify({ ...state, schemaVersion: 1,
+    platform.raw = JSON.stringify({ ...state, schemaVersion: 1, usageHistory: undefined,
       spend: measured ? { ...state.spend, historyComplete: undefined } : undefined });
     const expected = measured ? state.spend : {
       runs: 1, runnerMs: 45_000, credits: 33, nearLimit: 0, preempted: 0, historyComplete: false,
@@ -1056,6 +1092,7 @@ test('a rejected result still consumes budget', async () => {
   platform.finish({ jobId: '123-999' });
   await controller.tick(123);
   assert.equal(platform.stored!.state.spend.credits, before + 33);
+  assert.equal(platform.stored!.state.usageHistory!.at(-1)!.acceptedResult, undefined);
 });
 
 test('pause discards in-flight results; only a maintainer can resume', async () => {

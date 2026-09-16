@@ -213,10 +213,29 @@ reviewed commit, not to a mutable branch name.
 The PR's Cost section also records `SDLC_MODEL` and `SDLC_AIC_CREDIT_LIMIT` as
 configured at PR creation, defaulting to `auto` and `250`. These are not a
 per-run settings history: `auto` is a model selector, and the cap applies to
-each inference job rather than each turn. Existing PR descriptions are not
-rewritten when configuration or costs change. Cost totals are a creation-time
+each inference job rather than each turn. **Observed agent models** lists
+concrete model IDs captured from primary-agent token-usage telemetry, separately
+from that selector. Multiple models may appear; absent telemetry is shown as
+unavailable, never inferred from `auto`. This covers available settled receipts,
+not missing/legacy runs or separate threat-detection inference, and is not a
+per-model billing breakdown. Model observations survive retries and replanning;
+older records are not backfilled. Deploy controller and workflow together after
+draining older runs; strict older readers reject the new optional model fields.
+Existing PR descriptions are not rewritten when configuration, models, or costs
+change. Cost totals are a creation-time
 snapshot with any pending jobs explicitly excluded; the linked issue status
 reflects later settlement.
+
+The optional `usageHistory` ledger retains attribution after costs settle:
+registered stage and persona, task and job/run IDs, original source and trusted
+revisions, plan hash, requested model selector, observed models, and available
+per-model request/input/output/cache-token counts. Accepted report outcomes and
+resulting commits are recorded separately from mere usage. Missing telemetry
+stays explicit, and retries do not sum the same token snapshot twice. Records
+survive replanning and artifact expiration. This is collection only: no model
+routing, lab classification, or new acceptance gates. See
+[Retained Model Usage](docs/operations.md#retained-model-usage) for fields and limits.
+
 Failed CodeQL gates include bounded rule, file, line, and severity diagnostics
 in repair feedback when available, alongside the workflow evidence link. These
 diagnostics are untrusted context, not permission to suppress a finding or pass

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -123,6 +123,9 @@ test('cost accounting stays bound to the compiler and policy it measures', () =>
   assert.equal(prepare.env.SDLC_AIC_CREDIT_LIMIT, limit);
   const receipt = workflow.jobs.agent.steps.find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
   assert.equal(receipt.env.CREDIT_LIMIT, limit);
+  assert.equal(receipt.env.TOKEN_USAGE_PATH, '/tmp/gh-aw/sandbox/firewall/logs/api-proxy-logs/token-usage.jsonl');
+  const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  assert.equal(receipt.run, source['post-steps'].find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT).run);
   const controller = read('sdlc-controller.yml').jobs.reconcile.steps.find((step: { run?: string }) => step.run === 'node src/main.ts');
   assert.equal(controller.env.SDLC_AIC_CREDIT_LIMIT, "${{ vars.SDLC_AIC_CREDIT_LIMIT || '250' }}");
 });
@@ -178,6 +181,17 @@ test('generated firewall configurations enforce the chosen limit instead of a co
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('cost receipts accept observed model IDs without inventing them for legacy runs', () => {
+  const receipt = { credits: 12, preempted: false, creditLimit: 250 };
+  assert.deepEqual(costSchema.parse(receipt), receipt);
+  assert.deepEqual(costSchema.parse({ ...receipt, models: ['claude-sonnet-4.6', 'gpt-5.4'] }),
+    { ...receipt, models: ['claude-sonnet-4.6', 'gpt-5.4'] });
+  for (const models of [['auto'], ['AUTO'], ['unknown'], ['auto\n'], ['unknown\r'], ['model\n'],
+    ['model\u2028'], [''], ['model\n## forged heading'], Array(21).fill('model')]) {
+    assert.equal(costSchema.safeParse({ ...receipt, models }).success, false);
+  }
+});
+
 test('workflow-written cost receipt includes the exact limit used by the inference jobs', () => {
   const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
   const step = source['post-steps'].find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
@@ -189,8 +203,102 @@ test('workflow-written cost receipt includes the exact limit used by the inferen
     } });
     assert.equal(result.status, 0, result.stderr);
     const cost = costSchema.parse(JSON.parse(readFileSync(join(directory, '.sdlc-cost/cost.json'), 'utf8')));
-    assert.deepEqual(cost, { credits: 401.5, preempted: true, creditLimit: 400 });
+    assert.deepEqual(cost, { credits: 401.5, preempted: true, creditLimit: 400, models: [],
+      tokenUsage: { status: 'unavailable', models: [] } });
     assert.match(readFileSync(summary, 'utf8'), /400 AI credits/);
+    assert.match(readFileSync(summary, 'utf8'), /Observed agent models: unavailable/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('workflow cost receipts capture concrete usage models and tolerate unavailable telemetry', () => {
+  const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  const step = source['post-steps'].find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
+  assert.equal(step.env.TOKEN_USAGE_PATH, '/tmp/gh-aw/sandbox/firewall/logs/api-proxy-logs/token-usage.jsonl');
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-model-usage-'));
+  try {
+    const telemetry = join(directory, 'token-usage.jsonl');
+    const linked = join(directory, 'linked.jsonl');
+    symlinkSync(telemetry, linked);
+    const entries = [
+      { event: 'token_usage', model: 'gpt-5.4', input_tokens: 20, output_tokens: 5 },
+      { model: 'claude-sonnet-4.6', input_tokens: 40, output_tokens: 10 },
+      { model: 'gpt-5.4' }, { model: 'auto' }, { model: 'AUTO' }, { model: 'unknown' },
+      { model: 'auto\n' }, { model: 'unknown\r' }, { model: 'model\n' }, { model: 'model\u2028' },
+      { model: 'bad\n## heading' }, { model: {} }, { model: 'a'.repeat(129) },
+      { event: 'request', model: 'unobserved-model' }, { requested_model: 'configured-model' }, null,
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n{"model":';
+    for (const [content, path, expected] of [
+      [entries, telemetry, ['claude-sonnet-4.6', 'gpt-5.4']],
+      ['', telemetry, []], ['invalid\nnull\n[]', telemetry, []],
+      [entries, join(directory, 'missing'), []], [entries, linked, []], [entries, directory, []],
+      [' '.repeat(5_000_001) + entries, telemetry, []],
+      [Array.from({ length: 21 }, (_, index) => JSON.stringify({ model: `model-${index}` })).join('\n'),
+        telemetry, Array.from({ length: 21 }, (_, index) => `model-${index}`).sort().slice(0, 20)],
+    ] as const) {
+      writeFileSync(telemetry, content);
+      const summary = join(directory, 'summary.md');
+      const result = spawnSync('bash', ['-e', '-c', step.run], { cwd: directory, encoding: 'utf8', env: {
+        PATH: process.env.PATH, CREDITS: '12', PREEMPTED: 'true', CREDIT_LIMIT: '250',
+        TOKEN_USAGE_PATH: path, GITHUB_STEP_SUMMARY: summary,
+      } });
+      assert.equal(result.status, 0, result.stderr);
+      const cost = costSchema.parse(JSON.parse(readFileSync(join(directory, '.sdlc-cost/cost.json'), 'utf8')));
+      assert.deepEqual({ ...cost, tokenUsage: undefined },
+        { credits: 12, preempted: true, creditLimit: 250, models: expected, tokenUsage: undefined });
+      assert.equal(cost.tokenUsage!.status, expected.length ? 'partial' : 'unavailable');
+      assert.deepEqual(cost.tokenUsage!.models.map(usage => usage.model), expected);
+      assert.ok(readFileSync(summary, 'utf8').includes(`Observed agent models: ${expected.length ? expected.join(', ') : 'unavailable'}.`));
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('model token receipts snapshot the selector and count each request once without inventing missing tokens', () => {
+  const source = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  const step = source['post-steps'].find((step: { env?: Record<string, string> }) => step.env?.CREDIT_LIMIT);
+  assert.equal(step.env.REQUESTED_MODEL, source.engine.model);
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-attributed-tokens-'));
+  try {
+    const telemetry = join(directory, 'token-usage.jsonl');
+    const first = { event: 'token_usage', request_id: 'first', model: 'gpt-5.4',
+      input_tokens: 100, output_tokens: 20, cache_read_tokens: 40, cache_write_tokens: 0 };
+    const second = { ...first, request_id: 'second', input_tokens: 80, output_tokens: 30, cache_read_tokens: 20 };
+    const third = { ...first, request_id: 'third', model: 'claude-sonnet-4.6', input_tokens: 10 };
+    const execute = (entries: unknown[], requestedModel = 'auto') => {
+      writeFileSync(telemetry, entries.map(entry => JSON.stringify(entry)).join('\n'));
+      const result = spawnSync('bash', ['-e', '-c', step.run], { cwd: directory, encoding: 'utf8', env: {
+        PATH: process.env.PATH, CREDITS: '12', PREEMPTED: 'false', CREDIT_LIMIT: '250',
+        REQUESTED_MODEL: requestedModel, TOKEN_USAGE_PATH: telemetry, GITHUB_STEP_SUMMARY: join(directory, 'summary.md'),
+      } });
+      assert.equal(result.status, 0, result.stderr);
+      const raw = readFileSync(join(directory, '.sdlc-cost/cost.json'), 'utf8');
+      assert.ok(Buffer.byteLength(raw) <= 10_000, 'enriched receipts must fit the existing artifact bound');
+      return costSchema.parse(JSON.parse(raw));
+    };
+    const cost = execute([first, first, second, third]);
+    assert.equal(cost.requestedModel, 'auto');
+    assert.equal(cost.credits, 12);
+    assert.deepEqual(cost.tokenUsage, { status: 'available', models: [
+      { model: 'claude-sonnet-4.6', requests: 1, inputTokens: 10, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 0 },
+      { model: 'gpt-5.4', requests: 2, inputTokens: 180, outputTokens: 50, cacheReadTokens: 60, cacheWriteTokens: 0 },
+    ] });
+    for (const value of [undefined, null, -1, 0.5, '100', {}, { toString: null, valueOf: null }, Number.MAX_SAFE_INTEGER + 1]) {
+      const partial = execute([first, { ...second, input_tokens: value }], 'claude-sonnet-4.6');
+      assert.equal(partial.requestedModel, 'claude-sonnet-4.6');
+      assert.equal(partial.tokenUsage!.status, 'partial');
+      assert.deepEqual(partial.tokenUsage!.models, [
+        { model: 'gpt-5.4', requests: 2, inputTokens: null, outputTokens: 50, cacheReadTokens: 60, cacheWriteTokens: 0 },
+      ]);
+    }
+    assert.equal(execute([first], 'auto\n').requestedModel, undefined);
+    assert.equal(execute([{ ...first, input_tokens: Number.MAX_SAFE_INTEGER }, second]).tokenUsage!.models[0]!.inputTokens, null);
+    const maximum = execute(Array.from({ length: 20 }, (_, index) => ({ model: `m${index}`.padEnd(128, 'a'),
+      input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: Number.MAX_SAFE_INTEGER,
+      cache_read_tokens: Number.MAX_SAFE_INTEGER, cache_write_tokens: Number.MAX_SAFE_INTEGER })), 'm'.repeat(128));
+    assert.equal(maximum.models!.length, 20);
+    assert.equal(maximum.tokenUsage!.status, 'available');
+    for (const field of ['jobId', 'persona', 'stage', 'inputSha', 'planHash', 'approved']) {
+      assert.equal(costSchema.safeParse({ ...cost, [field]: 'forged' }).success, false);
+    }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -210,7 +318,8 @@ test('workflow cost receipts distinguish missing signals from measured zero and 
       } });
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(costSchema.parse(JSON.parse(readFileSync(join(directory, '.sdlc-cost/cost.json'), 'utf8'))),
-        { credits: expectedCredits, preempted: expectedPreempted, creditLimit: 250 });
+        { credits: expectedCredits, preempted: expectedPreempted, creditLimit: 250, models: [],
+          tokenUsage: { status: 'unavailable', models: [] } });
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

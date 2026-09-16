@@ -117,7 +117,7 @@ before any test assertion ran.
 
 ### Reviewers are correlated
 
-Every agent stage runs the same model. This was verified empirically: across 30
+Every agent stage used the same model in the initial experiment: across 30
 agent runs spanning research, decomposition, coding, security, testing, and
 review, the distinct model set was exactly `claude-sonnet-5`.
 
@@ -127,8 +127,11 @@ characteristic blind spot is present in the author and in all of its reviewers
 simultaneously. The non-LLM gates are currently the only uncorrelated reviewer,
 which is why they are doing disproportionate work.
 
-`SDLC_MODEL` now parameterises the model but is set to `auto`, so all stages still
-resolve identically.
+`SDLC_MODEL` now parameterises the model and defaults to `auto`. Sharing that
+selector does not guarantee identical resolved models. New cost receipts capture
+observed primary-agent model IDs, surfaced in lifecycle status and the final PR's
+Cost section. This makes the risk visible without claiming review diversity or
+reconstructing missing historical telemetry.
 
 ### Baseline debt blocks the pipeline systemically
 

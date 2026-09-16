@@ -4,6 +4,9 @@ import type { Lifecycle } from './lifecycle.ts';
 export const shaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const numberSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const modelSelectorSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/)
+  .refine(model => model.trim() === model);
+const modelSchema = modelSelectorSchema.refine(model => !['auto', 'unknown'].includes(model.toLowerCase()));
 // Validation must never rewrite stored text: persisted plan hashes are computed over the exact body.
 const text = z.string().min(1).regex(/\S/);
 export const stageSchema = z.enum(['research', 'decompose', 'code', 'scan', 'security', 'test', 'validate', 'document', 'review']);
@@ -24,11 +27,29 @@ export const changeSchema = z.object({
 }).strict();
 export type Change = z.infer<typeof changeSchema>;
 
+const tokenCountSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable();
+const modelUsageSchema = z.object({
+  model: modelSchema, requests: numberSchema.max(1_000_000),
+  inputTokens: tokenCountSchema, outputTokens: tokenCountSchema,
+  cacheReadTokens: tokenCountSchema, cacheWriteTokens: tokenCountSchema,
+}).strict();
+const tokenUsageSchema = z.object({
+  status: z.enum(['available', 'partial', 'unavailable']),
+  models: z.array(modelUsageSchema).max(20),
+}).strict().refine(usage => new Set(usage.models.map(item => item.model)).size === usage.models.length,
+  'Duplicate model token usage').refine(usage => usage.status === 'unavailable' ? usage.models.length === 0 : usage.models.length > 0,
+  'Token availability does not match observations').refine(usage => usage.status !== 'available' || usage.models.every(model =>
+    [model.inputTokens, model.outputTokens, model.cacheReadTokens, model.cacheWriteTokens].every(value => value !== null)),
+  'Available token usage contains unknown counts');
+
 // Written by a workflow post-step, not by the agent, so the agent cannot forge its own cost.
 export const costSchema = z.object({
   credits: z.number().min(0).max(100_000).finite().nullable(),
   preempted: z.boolean().nullable(),
   creditLimit: numberSchema.max(10_000).optional(),
+  models: z.array(modelSchema).max(20).optional(),
+  requestedModel: modelSelectorSchema.optional(),
+  tokenUsage: tokenUsageSchema.optional(),
 }).strict();
 export type Cost = z.infer<typeof costSchema>;
 
@@ -109,10 +130,18 @@ const jobSchema = z.object({
   costedRun: numberSchema.optional(),
 }).strict();
 
+const jobIdentitySchema = jobSchema.pick({ id: true, stage: true, inputSha: true, controlSha: true,
+  planHash: true, createdAt: true, runId: true }).extend({
+  taskId: jobSchema.shape.taskId.optional(), attempt: jobSchema.shape.attempt.optional(),
+});
+const observedCostSchema = costSchema.extend({ runnerMs: z.number().min(0).finite() });
+const acceptedUsageResultSchema = z.object({ outcome: reportSchema.shape.outcome, outputSha: shaSchema }).strict();
+
 const spendSchema = z.object({
   runs: z.number().int().min(0), runnerMs: z.number().min(0).finite(),
   credits: z.number().min(0).finite(), nearLimit: z.number().int().min(0),
   preempted: z.number().int().min(0),
+  models: z.array(modelSchema).max(2000).optional(),
 }).strict();
 
 export const lifecycleSchema = z.object({
@@ -135,19 +164,33 @@ export const lifecycleSchema = z.object({
   sequence: z.number().int().min(0), repairs: z.number().int().min(0), failures: z.number().int().min(0),
   spend: spendSchema.extend({ historyComplete: z.boolean() }),
   pendingCosts: z.array(z.object({
-    job: jobSchema.pick({ id: true, stage: true, inputSha: true, controlSha: true, planHash: true,
-      createdAt: true, runId: true }),
+    job: jobIdentitySchema,
     expiresAt: z.iso.datetime(),
-    observed: costSchema.extend({ runnerMs: z.number().min(0).finite() }).optional(),
+    observed: observedCostSchema.optional(),
+    acceptedResult: acceptedUsageResultSchema.optional(),
   }).strict()).max(100).refine(items => new Set(items.map(item => item.job.id)).size === items.length,
     'Duplicate pending cost job').optional(),
+  usageHistory: z.array(z.object({
+    job: jobIdentitySchema,
+    persona: z.string().nullable(),
+    observed: observedCostSchema.optional(),
+    acceptedResult: acceptedUsageResultSchema.optional(),
+  }).strict().refine(record => record.persona ===
+    (['scan', 'validate'].includes(record.job.stage) ? null : `sdlc-${record.job.stage}`),
+  'Usage persona does not match registered stage')).max(100)
+    .refine(items => new Set(items.map(item => item.job.id)).size === items.length, 'Duplicate usage job')
+    .refine(items => {
+      const runs = items.flatMap(item => item.job.runId === undefined ? [] : [item.job.runId]);
+      return new Set(runs).size === runs.length;
+    }, 'Duplicate usage run').optional(),
   feedback: z.string().max(24000), resumePhase: phaseSchema.optional(), error: z.string().max(12000).optional(),
   prNumber: numberSchema.optional(),
 }).strict() satisfies z.ZodType<Lifecycle>;
 
 const storedLifecycleSchema = z.discriminatedUnion('schemaVersion', [
   lifecycleSchema,
-  lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional(), pendingCosts: z.never().optional() }),
+  lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional(), pendingCosts: z.never().optional(),
+    usageHistory: z.never().optional() }),
 ]);
 
 export function migrateLifecycle(input: unknown): Lifecycle {

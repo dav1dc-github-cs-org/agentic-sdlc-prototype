@@ -4,7 +4,7 @@ import { unzipSync } from 'fflate';
 import { digest } from './domain.ts';
 import { isProtectedPath, isTestPath, validateChanges } from './changes.ts';
 import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
-import { assertPublishable, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
+import { assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
 export function workerFile(job: Pick<Job, 'stage'>): string {
@@ -399,6 +399,9 @@ export class GitHub implements Platform {
           `Configuration at PR creation:\n\n\`\`\`json\n${configuration}\n\`\`\`\n\n` +
           'The model setting is a configured selector, not a resolved per-run model. ' +
           'The credit limit applies separately to each inference job, not each turn; earlier runs may have used different settings.\n\n' +
+          `**Observed agent models:** ${formatObservedModels(state.spend.models)}.\n\n` +
+          'From available primary-agent token-usage telemetry only. Multiple models may be observed, including with auto selection. ' +
+          'Missing/legacy runs and separate detection inference are not covered; this is not a billing breakdown.\n\n' +
           `Cost snapshot at PR creation. [Lifecycle status](https://github.com/${this.scope.owner}/${this.scope.repo}/issues/${state.issueNumber}) ` +
           'tracks later cost settlement.\n\n' +
           (state.pendingCosts?.length ? `**Pending cost collection:** ${state.pendingCosts.length} job(s) are excluded from these totals.\n\n` : '') +

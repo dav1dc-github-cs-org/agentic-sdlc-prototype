@@ -324,6 +324,10 @@ test('cost sums job durations and reads the workflow-written budget outcome', as
   const configured = zipSync({ 'cost.json': strToU8('{"credits":50.8,"preempted":true,"creditLimit":500}') });
   assert.deepEqual(await build([{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 120 }], configured).cost(run, job),
     { runnerMs: 271_000, credits: 50.8, preempted: true, creditLimit: 500 });
+  const measured = { credits: 50.8, preempted: true, creditLimit: 500, models: ['claude-sonnet-4.6', 'gpt-5.4'] };
+  const modelArchive = zipSync({ 'cost.json': strToU8(JSON.stringify(measured)) });
+  assert.deepEqual(await build([{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 200 }], modelArchive).cost(run, job),
+    { runnerMs: 271_000, ...measured });
   for (const artifacts of [[], [{ id: 9, name: 'sdlc-cost', expired: true, size_in_bytes: 90 }],
     [{ id: 9, name: 'sdlc-cost', expired: false, size_in_bytes: 20_000 }]]) {
     assert.deepEqual(await build(artifacts, archive).cost(run, job), { runnerMs: 271_000, credits: null, preempted: null });
@@ -550,6 +554,7 @@ test('an unrelated pull request found by pagination blocks publication', async (
 
 test('final PR, advisory review, and commit check are idempotent and reference the reviewed SHA', async () => {
   const state = publishable();
+  state.spend.models = ['claude-sonnet-4.6', 'gpt-5.4'];
   state.plan = makePlan('Approved plan. Fixes #455.', 0);
   state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
     authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
@@ -586,6 +591,7 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   const snapshot = String(pulls[0]!.body);
   delete state.pendingCosts;
   state.spend.credits += 42;
+  state.spend.models.push('later-observed-model');
   const changedConfiguration = new GitHub('owner/repo', { ...policy, maxJobCredits: 575 },
     'sdlc[bot]', github.api, 'later-model');
   assert.equal(await changedConfiguration.publish(state), 126);
@@ -605,6 +611,11 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.match(cost, /not a resolved per-run model/);
   assert.match(cost, /each inference job, not each turn/);
   assert.match(cost, /earlier runs may have used different settings/);
+  assert.match(cost, /Observed agent models:\*\* `claude-sonnet-4\.6`, `gpt-5\.4`/);
+  assert.match(cost, /Multiple models may be observed, including with auto selection/);
+  assert.match(cost, /Missing\/legacy runs and separate detection inference are not covered/);
+  assert.match(cost, /not a billing breakdown/);
+  assert.doesNotMatch(cost, /later-observed-model/);
   assert.match(cost, /Cost snapshot at PR creation/);
   assert.match(cost, /Pending cost collection:\*\* 1 job\(s\) are excluded from these totals/);
   assert.match(cost, /https:\/\/github.com\/owner\/repo\/issues\/123/);
@@ -642,6 +653,8 @@ test('new PRs distinguish partial cost totals from the full lifecycle cost', asy
   assert.deepEqual(JSON.parse(/```json\n([\s\S]*?)\n```/.exec(cost)![1]!), {
     SDLC_MODEL: 'custom-model', SDLC_AIC_CREDIT_LIMIT: 575,
   });
+  assert.match(cost, /Observed agent models:\*\* unavailable/);
+  assert.doesNotMatch(cost, /Observed agent models:\*\* `custom-model`/);
 });
 
 test('the reporting model defaults to auto when unset or empty', () => {

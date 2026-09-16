@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { approvePlan, makePlan } from '../src/domain.ts';
-import { lifecycleSchema } from '../src/contracts.ts';
+import { lifecycleSchema, type Cost } from '../src/contracts.ts';
 import {
-  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, nextTask, recordChange,
-  requestRepair, startJob, validateTasks, type Task,
+  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, formatObservedModels, nextTask, observeCost, recordChange, recordSpend,
+  recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Task,
 } from '../src/lifecycle.ts';
 
 const at = '2026-09-08T12:00:00Z';
@@ -43,7 +43,7 @@ test('deferred costs preserve original job identity across interruption and seri
   assert.equal(restored.pendingCosts![0]!.expiresAt, expiresAt);
   assert.deepEqual(restored.pendingCosts![0]!.job, {
     id: job.id, stage: 'code', inputSha: job.inputSha, controlSha: job.controlSha,
-    planHash: job.planHash, createdAt: at, runId: 10,
+    planHash: job.planHash, createdAt: at, runId: 10, taskId: job.taskId, attempt: 1,
   });
   assert.deepEqual(restored.pendingCosts![0]!.observed, { runnerMs: 60_000, credits: null, preempted: null });
   job.feedback = 'Later changes cannot rewrite retained identity';
@@ -55,6 +55,151 @@ test('deferred costs preserve original job identity across interruption and seri
   job.costedRun = 10;
   deferCost(restored, job, expiresAt);
   assert.equal(restored.pendingCosts, undefined);
+});
+
+test('model observations survive partial receipts and accumulate independently of credit totals', () => {
+  const state = approvedState();
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  job.runId = 10;
+  const pending = deferCost(state, job, '2026-09-08T14:00:00Z', {
+    runnerMs: 60_000, credits: null, preempted: null, models: ['gpt-5.4'],
+  })!;
+  observeCost(pending, { runnerMs: 120_000, credits: 12, preempted: false, models: ['claude-sonnet-4.6', 'gpt-5.4'] });
+  observeCost(pending, { runnerMs: 60_000, credits: null, preempted: null, models: [] });
+  observeCost(pending, { runnerMs: 0, credits: null, preempted: null });
+  const restored = lifecycleSchema.parse(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(restored.pendingCosts![0]!.observed, {
+    runnerMs: 120_000, credits: 12, preempted: false, models: ['claude-sonnet-4.6', 'gpt-5.4'],
+  });
+  recordSpend(restored, restored.pendingCosts![0]!.observed!, 250);
+  recordSpend(restored, { runnerMs: 60_000, credits: 2, preempted: false, models: ['gpt-5.4'] }, 250);
+  recordSpend(restored, { runnerMs: 60_000, credits: 0, preempted: false }, 250);
+  assert.deepEqual(lifecycleSchema.parse(JSON.parse(JSON.stringify(restored))).spend, {
+    runs: 3, runnerMs: 240_000, credits: 14, nearLimit: 0, preempted: 0, historyComplete: true,
+    models: ['claude-sonnet-4.6', 'gpt-5.4'],
+  });
+});
+
+test('settlement retains model attribution after pending cleanup and charges a registered job once', () => {
+  const state = approvedState();
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  job.runId = 10;
+  const pending = deferCost(state, job, '2026-09-08T14:00:00Z', {
+    runnerMs: 60_000, credits: 12, preempted: false, models: ['gpt-5.4'],
+  })!;
+  settleCost(state, pending, 250);
+  forgetCost(state, job.id);
+  state.job = undefined;
+  recordChange(state, finalSha);
+  const restored = lifecycleSchema.parse(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(restored.usageHistory, [{
+    job: pending.job, persona: 'sdlc-code', observed: pending.observed,
+  }]);
+  assert.equal(restored.pendingCosts, undefined);
+  assert.equal(restored.usageHistory![0]!.job.inputSha, baseSha);
+  const before = structuredClone(restored.spend);
+  settleCost(restored, pending, 250);
+  assert.deepEqual(restored.spend, before);
+  assert.equal(restored.usageHistory!.length, 1);
+  for (const changed of [{ runId: 11 }, { controlSha: finalSha }, { inputSha: finalSha },
+    { planHash: null }, { taskId: 'different' }, { attempt: 2 }]) {
+    assert.throws(() => settleCost(restored, { ...pending, job: { ...pending.job, ...changed } }, 250), /identity changed/);
+  }
+  assert.throws(() => settleCost(restored, { ...pending, job: { ...pending.job, id: '123-2' } }, 250),
+    /already belongs to another job/);
+  assert.deepEqual(restored.spend, before);
+});
+
+test('usage history marks missing observations without inventing a persona for deterministic jobs', () => {
+  const state = approvedState();
+  const job = startJob(state, 'research', at);
+  const before = structuredClone(state.spend);
+  for (const [index, stage] of ['research', 'decompose', 'code', 'scan', 'security', 'test', 'validate', 'document', 'review'].entries()) {
+    const pending = { job: { id: `123-${index + 1}`, stage: stage as typeof job.stage, inputSha: baseSha,
+      controlSha: baseSha, planHash: job.planHash, createdAt: at }, expiresAt: '2026-09-08T14:00:00Z' };
+    settleCost(state, pending, 250);
+    assert.equal(state.usageHistory![index]!.persona, ['scan', 'validate'].includes(stage) ? null : `sdlc-${stage}`);
+    assert.equal(state.usageHistory![index]!.observed, undefined);
+  }
+  const restored = lifecycleSchema.parse(JSON.parse(JSON.stringify(state)));
+  assert.equal(restored.usageHistory!.length, 9);
+  assert.deepEqual(restored.spend, before);
+  assert.equal(restored.usageHistory![0]!.job.taskId, undefined);
+  assert.equal(restored.usageHistory![0]!.job.attempt, undefined);
+  const record = restored.usageHistory![0]!;
+  for (const usageHistory of [[record, record], [{ ...record, persona: 'sdlc-review' }],
+    [{ ...record, approved: true }], [{ ...record, observed: { runnerMs: -1, credits: null, preempted: null } }],
+    [{ ...record, job: { ...record.job, runId: 1 } }, { ...record, job: { ...record.job, id: '123-2', runId: 1 } }]]) {
+    assert.equal(lifecycleSchema.safeParse({ ...restored, usageHistory }).success, false);
+  }
+});
+
+test('token snapshots and configured selectors survive retries without summing repeated observations', () => {
+  const state = approvedState();
+  const job = startJob(state, 'research', at);
+  job.runId = 10;
+  const usage: NonNullable<Cost['tokenUsage']> = { status: 'available', models: [{
+    model: 'gpt-5.4', requests: 2, inputTokens: 100, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0,
+  }] };
+  const missing: Cost = { credits: null, preempted: null };
+  const observed = { ...missing, runnerMs: 60_000, requestedModel: 'auto', models: ['gpt-5.4'], tokenUsage: usage };
+  const pending = deferCost(state, job, '2026-09-08T14:00:00Z', observed)!;
+  for (const cost of [observed, { ...missing, runnerMs: 0 },
+    { ...observed, requestedModel: 'later-selector', tokenUsage: { status: 'unavailable' as const, models: [] } },
+    { ...observed, tokenUsage: { status: 'partial' as const, models: [{ ...usage.models[0]!, requests: 3, inputTokens: null }] } }]) {
+    observeCost(pending, cost);
+  }
+  assert.equal(pending.observed!.requestedModel, 'auto');
+  assert.deepEqual(pending.observed!.tokenUsage, usage);
+  const newer = { ...usage, models: [{ ...usage.models[0]!, requests: 3, inputTokens: 150 }] };
+  observeCost(pending, { ...observed, tokenUsage: newer, credits: 12, preempted: false });
+  settleCost(state, pending, 250);
+  forgetCost(state, job.id);
+  const restored = lifecycleSchema.parse(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(restored.usageHistory![0]!.observed!.tokenUsage, newer);
+  assert.equal(restored.usageHistory![0]!.observed!.requestedModel, 'auto');
+  assert.equal(restored.spend.credits, 12);
+});
+
+test('accepted usage results attach only to existing bound accounting and never become gate evidence', () => {
+  const state = approvedState();
+  const job = startJob(state, 'research', at);
+  job.runId = 10;
+  recordUsageResult(state, job, 'pass', baseSha);
+  assert.equal(state.usageHistory, undefined);
+  const pending = deferCost(state, job, '2026-09-08T14:00:00Z')!;
+  recordUsageResult(state, { ...job, runId: 11 }, 'pass', finalSha);
+  recordUsageResult(state, { ...job, inputSha: finalSha }, 'pass', finalSha);
+  assert.equal(pending.acceptedResult, undefined);
+  recordUsageResult(state, job, 'blocked', baseSha);
+  settleCost(state, pending, 250);
+  forgetCost(state, job.id);
+  assert.deepEqual(state.usageHistory![0]!.acceptedResult, { outcome: 'blocked', outputSha: baseSha });
+  assert.deepEqual(state.evidence, []);
+  assert.deepEqual(lifecycleSchema.parse(JSON.parse(JSON.stringify(state))).usageHistory, state.usageHistory);
+});
+
+test('missing model telemetry never invents models or invalidates measured credit history', () => {
+  const state = lifecycleSchema.parse(JSON.parse(JSON.stringify(approvedState())));
+  assert.equal(state.spend.models, undefined);
+  recordSpend(state, { runnerMs: 60_000, credits: 10, preempted: false }, 250);
+  recordSpend(state, { runnerMs: 60_000, credits: 10, preempted: false, models: [] }, 250);
+  assert.equal(state.spend.models, undefined);
+  assert.equal(state.spend.historyComplete, true);
+  assert.equal(state.spend.credits, 20);
+});
+
+test('model reporting bounds display size without discarding stored observations', () => {
+  assert.equal(formatObservedModels(), 'unavailable');
+  assert.equal(formatObservedModels([]), 'unavailable');
+  assert.equal(formatObservedModels(['gpt-5.4']), '`gpt-5.4`');
+  const models = Array.from({ length: 2000 }, (_, index) => `model-${index}`);
+  const original = [...models];
+  assert.equal(formatObservedModels(models),
+    models.slice(0, 20).map(model => `\`${model}\``).join(', ') + ' (+1980 more recorded)');
+  assert.deepEqual(models, original);
 });
 
 test('pending-cost schema rejects duplicates, malformed observations, and extra authority', () => {
