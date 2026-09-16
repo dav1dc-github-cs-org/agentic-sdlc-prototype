@@ -22,7 +22,8 @@
     "attempt": 1,
     "createdAt": "2026-09-16T21:15:02.885Z",
     "dispatchedAt": "2026-09-16T21:15:04.050Z",
-    "runId": 35151310739
+    "runId": 35151310739,
+    "costedRun": 35151310739
   },
   "evidence": [],
   "processedEvents": [],
@@ -30,12 +31,54 @@
   "repairs": 0,
   "failures": 0,
   "spend": {
-    "runs": 0,
-    "runnerMs": 0,
-    "credits": 0,
+    "runs": 1,
+    "runnerMs": 523000,
+    "credits": 75.93323,
     "nearLimit": 0,
     "preempted": 0,
-    "historyComplete": true
+    "historyComplete": true,
+    "models": [
+      "claude-sonnet-5"
+    ]
   },
-  "feedback": ""
+  "feedback": "",
+  "usageHistory": [
+    {
+      "job": {
+        "id": "27-1",
+        "stage": "research",
+        "inputSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
+        "controlSha": "a55dccdeefa84ddcc50fec1c730e4ebf60115ba6",
+        "planHash": null,
+        "createdAt": "2026-09-16T21:15:02.885Z",
+        "taskId": null,
+        "attempt": 1,
+        "runId": 35151310739
+      },
+      "persona": "sdlc-research",
+      "observed": {
+        "runnerMs": 523000,
+        "credits": 75.93323,
+        "preempted": false,
+        "creditLimit": 300,
+        "models": [
+          "claude-sonnet-5"
+        ],
+        "requestedModel": "auto",
+        "tokenUsage": {
+          "status": "available",
+          "models": [
+            {
+              "model": "claude-sonnet-5",
+              "requests": 37,
+              "inputTokens": 5495,
+              "outputTokens": 24394,
+              "cacheReadTokens": 1727349,
+              "cacheWriteTokens": 63573
+            }
+          ]
+        }
+      }
+    }
+  ]
 }
