@@ -93,7 +93,7 @@ The chess specification requires a rules library, a local opponent engine,
 self-contained browser packaging, and real-browser validation. The repository
 had none of that tooling installed, and the necessary dependency manifests and
 validation configuration were protected from feature-job edits. The
-[specification](chess-game-feature.md#research-and-maintainer-prerequisites)
+[original specification](https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/blob/a55dccdeefa84ddcc50fec1c730e4ebf60115ba6/docs/chess-game-feature.md#research-and-maintainer-prerequisites)
 already identified those prerequisites. Research correctly stopped instead of
 inventing an executable plan or claiming unsupported browser evidence.
 

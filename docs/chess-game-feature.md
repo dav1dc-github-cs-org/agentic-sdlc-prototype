@@ -1,618 +1,373 @@
-# [Feature] Portable Chess: local and computer opponents
+# [Feature] Portable Chess Practice: local play and a basic computer
 
 ## Objective
 
-Build a complete, untimed chess game for two people sharing a desktop, tablet,
-or phone, or one person playing against a local computer opponent. Players
-should be able to start immediately, make only legal moves, understand whose
-turn it is, finish a game, and resume after an accidental reload.
-Deliver the application as a self-contained folder that can be copied to an
-ordinary static web host without a backend, account, or external runtime service.
+Build a small, untimed chess web app for two people sharing a device or one
+person practicing against a basic computer. Keep standard chess move legality,
+a usable board, turn/result feedback, move history, undo, and board flip. Deliver
+static files that work on an ordinary web host without accounts or services.
 
-Draft updated 2026-09-16 for requester review, including the requested option
-to play against the computer. Other scope choices below remain proposed defaults,
-not recorded requester approval. Creating this specification does not authorize
-dependency changes, issue creation, deployment, or execution of the agentic pipeline.
+This is a revised draft for a new feature request after issue #27 was closed.
+It replaces the earlier 28-requirement draft, rather than retrying its unmet
+toolchain prerequisites. Requirements below use a new numbered baseline. It does
+not reopen #27, approve a plan, publish an issue, or change repository policy.
 
-### Scope Baseline and Assumptions
+### Scope Changes for This Pilot
 
-- New application; it does not extend the turtle feature or the SDLC controller.
-- Casual players who already know basic chess, not a tutorial or tournament site.
-- Two modes: local two-player, named White and Black, and one human versus the
-  computer. Local two-player is the first-visit default. Computer mode offers
-  human color White/Black and Easy/Normal/Hard difficulty; defaults are White
-  and Normal. No online opponent in the first release.
-- Standard starting position and standard move legality, with the explicit
-  automatic-draw policy in REQ-009. This is not tournament-certified software.
-- Click/tap and keyboard moves, legal-destination indicators, promotion choice,
-  turn/result status, move history, board flip, undo, new game, resignation,
-  agreed draw in local two-player mode, one locally saved game, and PGN export
-  are in scope. Computer moves are calculated on the playing device, not by a
-  remote service or generative AI.
-- Portable means a self-contained static release served over HTTP or HTTPS,
-  including from a nested URL path. Direct `file://` opening, installable PWA
-  behavior, and guaranteed offline reopening are not first-release requirements.
-- A game already fully loaded must remain playable after network loss. Local
-  saves are browser/origin-specific; copying the app does not copy saved games.
+- Keep local two-player and human White/Black versus computer modes.
+- Use one basic practice opponent that selects from the rules library's legal
+  moves. It is deliberately weak, not Stockfish or a rated/search-based opponent.
+  Difficulty levels and an advanced engine are deferred, not implied features.
+- Explicitly permit the pinned, license-bearing JavaScript rules files listed
+  below as application source. This replaces the old blanket ban on vendoring.
+  No package installation, manifest, lockfile, or workflow change is required.
+- Use the existing TypeScript compiler and a small Node-standard-library copying
+  script for packaging, not a new framework, bundler, or release pipeline.
+- Existing Node tests and deterministic gates remain mandatory. Browser checks
+  are explicit human PR-review requirements, not new automated pipeline gates.
+- Defer saved games, PGN import/export, resignation, agreed draws, clocks, and
+  difficulty settings. Refresh starts a fresh local game. Game state stays in
+  memory; no persistence, migration, or cross-device contract is needed.
+
+The tradeoff is intentional: a smaller playable chess pilot using current
+tooling, not the earlier full-featured product. The source dependency still needs
+normal plan/license/security review. Its inclusion is not permission to bypass
+scanners, exceed budgets, or import arbitrary third-party code.
 
 ## Acceptance Criteria
 
 ### User Scenarios and Testing
 
-**P1: Start and play a legal game.** Given local two-player mode on a first visit
-with no saved game,
-when White selects e2 and then e4, the pawn moves once, Black becomes the side
-to move, and the history records `1. e4`. An attempt to move Black's e7 pawn
-to e4 is rejected without changing the position, turn, history, or saved game.
+**P1: Play locally.** Given a fresh page, White selects e2 then e4. The pawn
+moves once, Black becomes the side to move, and history shows `1. e4`. An illegal
+e7-e4 attempt changes neither board, turn, nor history. No start screen intervenes.
 
-**P1: Complete a special move.** Given a position with a legal promotion,
-when the player selects its destination, the game waits for a queen, rook,
-bishop, or knight choice. Choosing a knight commits that promotion exactly
-once. Cancelling leaves the entire pre-move state unchanged.
+**P1: Play the computer.** Given a new Computer game with the human as White,
+after e4 the computer makes exactly one legal Black move and waits. With the
+human as Black, the computer makes the first White move. The human cannot move
+the computer's pieces. Both modes work without external network calls after load.
 
-**P1: Finish a game correctly.** Given local two-player mode at the standard initial position,
-when `1. f3 e5 2. g4 Qh4#` is played, the result is `0-1`, the status identifies
-Black's checkmate win, and further board moves are disabled. Undoing the final
-move reopens the position with Black to move and removes the result.
+**P1: Finish a game.** In Local mode, playing `1. f3 e5 2. g4 Qh4#` produces
+Black's checkmate win and locks further board moves. Undo removes Qh4#, clears
+that ending, and returns Black's turn. New game resets the board and history.
 
-**P1: Play against the computer.** Given a new Computer game with the human
-playing White, when the human plays e4, a visible thinking state appears and
-exactly one legal Black reply is applied. The human cannot move Black's pieces.
-Given the human chooses Black instead, the computer makes the opening White
-move without requiring a human board action, then waits for the human.
+**P1: Cancel a queued reply.** In Computer mode, after the human's e4 but
+before the computer callback runs, Undo restores the initial position. Invoking
+that old callback later, even twice, cannot change the restored game.
 
-**P1: Cancel an obsolete reply.** Given a Computer game in which the human
-has just moved and the engine is thinking, when Undo is activated, the search
-is cancelled and the position before that human move is restored. A late reply
-from the cancelled search changes neither the board, history, nor saved game.
+**P2: Use the portable output.** Build, copy only the output folder outside
+the repository, and serve it at `/` and `/demo/chess/`. In each location the page,
+rules, controls, and pieces load. Disconnect the network after readiness and
+play, undo, flip, and start a game in either mode without requesting more assets.
 
-**P1: Use the distributed app.** Given only the release folder copied outside
-the repository and served beneath `/demo/chess/`, when a browser opens that URL,
-the board, artwork, rules, and controls load without missing files or requests
-outside that folder. After all required assets, including the computer engine,
-load, disabling the network does not prevent moves by either side, promotion,
-undo, new games in either mode, or PGN export.
-
-**P2: Recover a game.** Given a game with move history and a flipped board,
-when the page is refreshed at the same app URL, its committed position, turn,
-move history, repetition history, orientation, mode, human color, difficulty,
-and any final result are restored. A pending promotion or confirmation is not
-restored as a committed action. If it is the computer's turn in an ongoing game,
-one fresh search starts from the restored history; an old reply is not replayed.
-
-**P2: Play without a pointer.** Given keyboard focus on the board, when a
-player navigates to e2, selects it, navigates to e4, and confirms, the same
-move and announcements occur as with a pointer. Board flipping changes visual
-navigation consistently but never changes the chess position.
-
-**P2: Restart without accidental loss.** Given a game containing moves,
-when the New game setup is opened and cancelled, nothing committed changes.
-Confirming starts the selected mode at the standard initial position, clears
-history and result, and replaces the single saved game. The previous game is
-not retained as a hidden second save.
-
-**P2: Recover from an engine failure.** Given an ongoing Computer game, when
-engine initialization or a reply fails, the position and history remain intact,
-the waiting state ends with an explicit error, and the human can retry the
-computer, undo where possible, export, or start a new game. There is no silent
-switch to random moves, a remote engine, or local two-player mode.
+**P2: Use keyboard and touch.** Make a legal move with keyboard only, then
+with touch. Resize and flip the board without losing state. Focus remains
+visible, buttons remain reachable, and no square is obscured or clipped.
 
 ### Functional Requirements
 
-**REQ-001: Immediate playable board.** On first visit, show one 8-by-8 board
-in local two-player mode with 32 pieces in the standard initial position, White
-to move, and White's pieces at the bottom. The lower-right square from White's
-view, h1, is light.
-Show file/rank coordinates, side to move, move history, and game controls. No
-landing page, login, instruction modal, or start button blocks the first move.
-A valid saved game replaces the initial position as specified in REQ-015.
+**REQ-001: Immediate game.** Start in Local two-player mode with the standard
+32-piece position, White to move, and White at the bottom. h1 is light. Show
+coordinates, current mode/side to move, move history, New game, Undo, and Flip.
+The first screen is the board, not a landing page, tutorial, or sign-in screen.
 
-**REQ-002: Selection and legal destinations.** Only a piece of the side to
-move that is controlled by a human can become selected. Both colors are human
-controlled in local two-player mode; only the chosen human color is selectable
-in Computer mode, and only on its turn. Selecting a piece reveals all and only its legal target
-squares, distinguishing captures. Selecting it again or pressing Escape clears
-selection; selecting another friendly piece changes selection. Activating a
-nonlegal destination retains the selection, announces that the move is invalid,
-and changes no committed game state. Selection, last move, and a checked king
-are distinguishable without relying on color alone.
+**REQ-002: Move selection.** Only a human-controlled piece of the side to move
+can be selected. Show its legal destinations, distinguishing captures. Selecting
+it again or pressing Escape clears selection; another friendly piece replaces
+selection. An illegal target retains selection and announces the invalid action
+without changing committed state. Distinguish selection, last move, and check
+without relying on color alone. Dragging is optional, never required.
 
-**REQ-003: Chess legality.** Enforce piece movement, blocked paths, captures,
-pawn single/double advances and diagonal captures, and alternating turns.
-Reject moves that leave or place the moving player's king in check, including
-discovered attacks and illegal en passant. Kings are never captured and may
-not occupy adjacent squares. Board orientation does not affect legality.
+**REQ-003: Legal chess.** Use the pinned rules library as the single authority
+for legal moves, captures, king safety, check, and position history. Do not
+reimplement move generation or allow a move that leaves one's king in check.
+Kings are never captured. UI actions, computer choices, and tests use the same
+application state owner; the board view does not maintain a second rules engine.
 
-**REQ-004: One activation, one committed move.** A completed destination
-activation commits exactly one legal move. Repeated events, rapid double taps,
-or mixing keyboard and pointer input must not produce duplicate moves. Position,
-turn, history, status, and save state update as one logical operation; invalid
-input or cancelled dialogs must not partly mutate them. Computer replies follow
-the same commit path and are accepted only for a live current-turn request
-(REQ-027). No duplicate or speculative auto-moves, touch-plus-click double
-handling, or continuous movement on pointer hold.
+**REQ-004: Special moves.** Support both castling sides for both colors,
+including lost rights and check/transit restrictions. Support en passant only
+on the immediately eligible turn and only when the moving king remains safe.
+Human promotion offers queen, rook, bishop, and knight before committing;
+Cancel/Escape leaves the pre-move state unchanged and restores focus. Other
+game-changing controls are unavailable until promotion is resolved. Computer
+promotion uses the full legal move selected by the library, without a dialog.
 
-**REQ-005: Castling.** Support kingside and queenside castling for both colors.
-The king and relevant rook must retain castling rights, intervening squares must
-be empty, and the king cannot start in, pass through, or end in check. Castling
-moves both pieces in one committed move. Moving a king or rook and moving it
-back does not restore rights; capturing a rook does not allow a replacement rook
-to acquire its rights. Undo restores the actual prior rights.
+**REQ-005: Results.** Announce check and the side to move. End on checkmate,
+stalemate, insufficient material, threefold repetition, or the fifty-move rule,
+with a specific reason and `1-0`, `0-1`, or `1/2-1/2`. Evaluate checkmate first,
+then stalemate, material, repetition, and fifty-move in that order. Use the
+library's history-aware repetition and half-move counters, not a board-image
+comparison. Material draws cover bare kings, king plus a lone bishop/knight
+versus king, and bishops-only positions with all bishops on the same square
+color; two knights versus king is not automatically drawn merely because mate
+cannot be forced. For this casual pilot repetition and fifty-move draws are
+automatic, not claim-based; do not claim full tournament adjudication or general
+dead-position detection. Ending locks board moves, not Undo, Flip, or New game.
 
-**REQ-006: En passant.** Allow a pawn to capture en passant only on the move
-immediately after the opposing pawn's qualifying two-square advance, and only
-if the capture leaves its own king safe. Remove the captured pawn from its
-actual square. An intervening move expires the opportunity. Undo and reload
-restore the opportunity exactly when it existed in the saved position.
+**REQ-006: Move history.** Display the committed main line in the library's
+Standard Algebraic Notation (SAN), grouped by move number. Captures, castling,
+promotion, checks, and mate are represented correctly. History, turn, last-move
+marker, and result always agree with the board. Selecting a piece adds no move.
 
-**REQ-007: Promotion.** A human-controlled pawn reaching its last rank, by
-movement or capture, must offer queen, rook, bishop, and knight of the moving
-color. Do not silently auto-queen a human move. Until a choice is confirmed,
-retain the pre-move position and turn;
-other game-changing controls are unavailable. Escape or Cancel dismisses the
-choice, clears selection, and returns focus to the origin square. Confirmation
-updates the board, history, check/result state, and save exactly once. A computer
-promotion uses the engine's explicit legal promotion choice with no human dialog;
-an absent or invalid choice is an invalid reply, not permission to auto-queen.
+**REQ-007: Basic computer.** Computer mode offers human White or Black and
+one level labelled `Basic computer`. Select uniformly from the current legal
+move list, including complete promotion choices, using a supplied random value
+in `[0, 1)`. Production may use `Math.random`; Node tests supply fixed values.
+The computer performs no minimax, evaluation search, remote inference, or
+prediction of human moves. No second engine, worker, WebAssembly, engine data,
+or difficulty dependency is required. This is a legal-move practice partner,
+not a strong opponent; make no Elo or tactical-strength claim.
 
-**REQ-008: Check and checkmate.** Announce check with the side to move and
-identify the checked king. If that side has no legal move, end the game as
-checkmate and identify the winner with `1-0` or `0-1`. Checkmate takes precedence
-over a simultaneously reached move-count draw threshold. Final status remains
-visible without a modal obscuring the board; only board moves are locked.
-Undo, flip, new game, and export remain available as applicable.
+**REQ-008: One current reply.** Queue at most one computer callback for a
+foreground ongoing game on the computer's turn, including its opening move when
+the human is Black. Expose a brief computer-turn status and disable human board
+moves for that turn, but keep other applicable controls responsive. Do not run
+a continuous loop. Bind the callback to its game instance, position revision,
+and request identity; accept it once only while all still match. Revalidate the
+selected move through the rules library before committing. Invalid/duplicate
+human events or stale callbacks never partially update board, history, or result.
 
-**REQ-009: Explicit casual draw policy.** Automatically end with `1/2-1/2`
-and a specific reason for stalemate, threefold repetition, the fifty-move rule,
-or the material cases below. Threefold counts the same side to move, piece
-placement, castling rights, and legally relevant en-passant availability; a
-board image or current FEN alone is not a repetition history. Fifty moves means
-100 consecutive half-moves without a pawn move or capture, resetting on either.
-Material draws cover bare kings, king and one bishop versus king, king and one
-knight versus king, and kings with bishops only when every bishop occupies the
-same square color. Do not declare king and two knights versus king drawn merely
-because checkmate cannot be forced. When several draw conditions coincide,
-report stalemate, then material, then repetition, then fifty-move in that order.
-For this casual release, repetition and fifty-move draws are automatic rather
-than claim-based. Document that distinction; do not claim complete FIDE
-tournament adjudication or general detection of every possible dead position.
+Cancel and invalidate queued replies before undo, opening New game, or disposing
+of the game. Pause replies while a dialog is open or the page is hidden; resume
+one fresh callback when appropriate. An old reply is ignored even if its move
+would be legal in the replacement position. No reply occurs after game over.
+Unexpected chooser errors preserve state and show a bounded error with Retry,
+Undo where applicable, and New game; no retry loop or invented move/result.
 
-**REQ-010: Readable move record.** Display the committed main line in Standard
-Algebraic Notation (SAN), grouped by move number with White and Black moves.
-Include captures, disambiguation, castling, promotion, check, and mate notation.
-Keep the latest move visible without scrolling the whole page unexpectedly.
-History and current result must agree with the board after moves, undo, and
-reload. In-progress result is `*`; a selected square is not a history entry.
+**REQ-009: Undo.** In Local mode remove one half-move. In Computer mode
+restore the position immediately before the most recent human move, removing
+that move and any following computer reply, so the human can choose again.
+Disable Undo with no prior human move in Computer mode, including after the
+computer's opening White move. Cancel outstanding replies first. Restore all
+rights, captures, promotion, counters, repetition history, turn, and result.
+Undoing a terminal move re-evaluates the restored position. There is no redo;
+a subsequent move replaces the undone continuation.
 
-**REQ-011: Resignation and agreed draw.** Resign opens a confirmation naming
-the side to move in local two-player mode, or the human's color in Computer mode.
-Confirmation awards the other side the win. The human may resign while the
-computer is thinking; cancel that search before opening the confirmation and
-reject its late replies. Cancelling the dialog leaves committed state unchanged
-and starts a fresh search if it is still the computer's turn. Draw is available
-only in local two-player mode and confirms that both local players agree before
-ending the game. There is no computer draw negotiation or computer resignation
-in this release; automatic draws and checkmate apply to both modes. These actions
-require an ongoing game with no promotion pending, add no fictitious chess move,
-and are not remote consent or authentication mechanisms.
+**REQ-010: New game and flip.** New game offers Local or Computer, and human
+White/Black for Computer. It defaults to the current settings; the first Computer
+choice defaults to human White. Confirming explicitly discards the old game,
+starts the standard position, and orients Computer games toward the human.
+Local games preserve the prior orientation. Cancel preserves committed state
+and resumes one pending computer turn if needed. Settings never change midway
+through a game. Flip rotates only the view and coordinates; pieces/text stay
+upright, selection clears, and turn/human ownership/history never change.
+Do not auto-flip after turns. Flip alone does not invalidate a current reply.
 
-**REQ-012: Undo.** In local two-player mode, Undo removes exactly one most
-recent committed action: one half-move or an explicit resignation/agreed draw.
-In Computer mode, undoing moves cancels any search and restores the position
-immediately before the most recent human move, removing that move and any
-computer reply after it. This lets the human choose again rather than immediately
-triggering a replacement computer reply. With no prior human move, move-Undo is
-disabled, including after the computer's opening move when the human is Black.
-In either mode, undoing an explicit ending first removes only that ending and
-reopens the same position; a fresh computer search starts if appropriate.
-Undoing a move restores captured pieces, promotion, castling/en-passant rights,
-move counters, repetition history, turn, and the previous last-move marker, and
-re-evaluates board-derived endings. Disable Undo with no undoable action or during
-a pending dialog, not merely because a search is running. Reject replies from
-cancelled searches. There is no redo or variation tree; a new move after undo
-replaces the removed line.
+**REQ-011: Accessible responsive board.** Use stable square board dimensions,
+eight equal rows/columns, contrasting squares, and recognizable original SVG
+piece artwork stored as text. No external images, fonts, or platform-dependent
+chess glyphs. Provide one tab entry to the board, visual-direction arrow-key
+navigation, Enter/Space activation, Escape cancellation, and normal Tab exit.
+Expose square names, piece/color, selection, and legal targets to assistive
+technology. Announce moves, turn, check, errors, and results without stealing
+focus. Dialogs have names, contained focus, and focus restoration. Use visible
+focus and contrast of at least 4.5:1 for normal text and 3:1 for controls/focus.
 
-**REQ-013: New game.** New game opens a setup dialog for mode and, when
-applicable, human color and difficulty (REQ-024). Opening it cancels active
-searches and pauses new ones; the committed game is unchanged while it is open.
-Make replacement explicit if moves or a final result exist. Cancel preserves
-the game and resumes a fresh search only if needed. Confirm replaces the game
-with the standard initial position, White to move, no history, and no result,
-using the chosen settings. For a new Computer game, put the human's color at
-the bottom; for a local game, preserve the previous orientation. Persist the
-reset so refresh cannot resurrect the discarded game. Invalidate old searches
-before replacement, and start the computer's opening move if the human is Black.
-Reset itself is not undoable.
+At 320, 390, 768, and 1280 CSS pixels and 200% text zoom, no horizontal scrolling,
+overlap, or clipped controls/labels. Vertical scrolling is fine. Non-board
+controls are at least 44 by 44 CSS pixels and board squares at least 32 pixels
+at the narrowest viewport. Keep history beside or below the board as space
+permits. Resizing preserves the game; reduced-motion settings are respected.
 
-**REQ-014: Flip board.** Flip rotates the board view by 180 degrees and places
-the other color at the bottom, including piece and coordinate placement. Piece
-artwork and text remain upright for the viewer. It never changes turn, rights,
-history, result, logical square identities, mode, or which color the human owns.
-Do not automatically flip after each turn. Clear any transient selection and
-preserve meaningful keyboard focus. Flipping during a search does not invalidate
-an otherwise current reply or let the human play the computer's side.
+**REQ-012: Privacy and session behavior.** Keep game state only in page memory.
+Refresh starts a new Local game; do not claim save/resume. No cookies, browser
+persistence, analytics, accounts, uploads, permissions prompts, or external
+runtime requests. After the app's own static assets load, both modes, undo, flip,
+and new game continue after network loss. Cold-start/offline reload, PWA install,
+and direct `file://` opening are not required. Render data as text or trusted
+artwork, not executable user-controlled markup.
 
-**REQ-015: One resumable local game.** Save each committed move, undo, reset,
-explicit ending, and orientation change in browser-local storage. After reload,
-reconstruct the same position and full legal history, including repetition and
-undo capability; saving only a board snapshot is insufficient. Include the
-committed mode, human color, and difficulty. Restore finished games as finished.
-Do not persist an in-flight search or its engine memory as a completed move.
-For an ongoing restored computer turn, initialize the engine from the restored
-game history and issue one new search. A completed human move must not be lost
-merely because its reply was pending. Saves belong to this application and its
-base path, not to other apps sharing an origin. Support one game in one active
-tab; multi-tab coordination and cross-device synchronization are not promised.
+**REQ-013: Portable build with existing tools.** Use `npm run build` unchanged
+and a new Node-standard-library packaging script under `apps/chess/`. The script
+copies only compiled chess modules, application HTML/CSS/JS/artwork, and the
+pinned vendor files/license into a self-contained folder under `dist/`. It must
+not fetch packages, invoke a new bundler, copy controller/test modules, or require
+a new manifest, lockfile, or compiler configuration. Document exact commands,
+working directories, output paths, entry URL, and a local serving command using
+installed tooling or a small Node-standard-library server. No `npx` downloads
+are a prerequisite for building, testing, serving, or playing this pilot.
 
-**REQ-016: Safe storage failure.** Treat saved content as untrusted, bounded,
-versioned data and replay/validate it before use. Limit a serialized save to
-1 MiB and reject larger records before parsing or replay. An unreadable, corrupt,
-illegal, oversized, or unsupported-version save must not crash the app, execute
-content, or silently masquerade as a valid game. Show a concise recovery message
-and a new playable board; retain the rejected save until the player explicitly
-chooses to discard it. Until then, new play stays in memory with working export;
-after discard, save the current game. If storage is unavailable, a write exceeds
-the size limit, or a write fails, continue in memory with a visible not-saved
-state and working export. Do not claim a save succeeded when it failed or
-repeatedly interrupt play with dialogs.
+The copied output must work at `/` and `/demo/chess/` on an ordinary static
+host. All relative module/asset references stay inside it and match actual output
+paths; no runtime imports from the repository, parent build folder, `node_modules`,
+CDN, or site-root absolute application paths. No custom routes, headers, secrets,
+or cross-origin isolation. An asset/rules load failure displays an explicit
+error, not an apparently working board. Generated output is not an agent proposal
+or a request for deployment/release automation.
 
-**REQ-017: PGN export.** Export the currently committed main line as a UTF-8
-`.pgn` download, using Portable Game Notation (PGN) with conventional headers,
-White/Black player labels for local play, or Human/Computer labels assigned to
-their correct colors in Computer mode, SAN moves, and a result consistent with
-the game. Do not invent a rating for the computer or player.
-Both the Result header and final movetext marker must reflect the application's
-outcome, including resignation and agreed draw; a library's default `*` is not
-acceptable for a completed game. Do not assume an exporter infers the result.
-Use unknown metadata placeholders rather than invented event/player details.
-Export works for empty, in-progress, undone, and completed games without changing
-them; snapshot committed state on activation, excluding an abandoned line,
-pending promotion, or unfinished computer search. The exported
-main line must parse and reproduce the position and result in a separate rules
-library instance. Download is user-initiated and involves no upload or clipboard
-permission. General PGN import, custom starting positions, and annotations are
-not first-release features.
+**REQ-014: Automated evidence.** Add discovered Node tests for application
+state, all rules examples below, computer choice/cancellation, undo, mode changes,
+and package integrity/import resolution. Test the pinned library through the
+same application integration used by the browser, not a substitute npm version.
+Use fixed random values and controlled scheduling for computer tests. Assertions
+state expected outcomes independently; a coverage percentage is not a criteria
+map. All authored game behavior belongs in covered TypeScript under `src/chess/`,
+with the browser layer limited to DOM/event wiring. Existing coverage thresholds,
+baseline non-regression, CodeQL, audit, and secret gates remain unchanged.
 
-### Portability and Experience Requirements
+**REQ-015: Human browser acceptance.** Browser behavior is checked by a human
+before merge, not by adding a required Playwright/Chromium/WebKit workflow. The
+final documentation must give exact steps and expected results for the scenarios
+below. Record browser/device versions and results when executed; absent tooling
+leaves these checks explicitly pending for human review, not falsely passed and
+not by itself a research-stage prerequisite. Existing browser tools may provide
+additional evidence but must not require installation or workflow changes. No
+agent may claim that Node tests or static CSS assertions prove browser behavior.
 
-**REQ-018: Self-contained release.** Supply one documented build command that
-produces a redistributable folder with the HTML entry point and every required
-script, stylesheet, rules-library resource, computer-engine worker/resource,
-font if any, and piece asset, including any engine WebAssembly or evaluation data.
-Serving that folder alone must work both at `/` and at a nested path such as
-`/demo/chess/`, after copying it outside the repository. No runtime dependency
-may resolve through repository source, parent build folders, `node_modules`, a
-CDN, or a root-absolute application path. No special server routes or environment
-variables, cross-origin-isolation headers, or SharedArrayBuffer support are
-required. Select an engine build that meets those restrictions, rather than
-requiring special host configuration. Recipients need only a static host and a supported
-browser, not Node.js or a build tool on the playing device. Include necessary
-third-party redistribution notices in the release.
+### Required Automated Examples
 
-**REQ-019: Offline continuity.** Once the playable board and required assets
-for both modes are ready, network loss must not affect rules, piece rendering,
-human or computer moves, promotion, history, undo, new game, local save attempts,
-or export. Make engine resources available for a fresh worker after undo, retry,
-or mode change without a new network fetch; merely keeping one running worker
-alive is insufficient. Do not defer required game assets to a later network
-fetch. An initial rules/UI asset failure must show an explicit failure/retry
-state rather than an inert playable-looking board. Engine-only failure follows
-REQ-028 and must not prevent local two-player games from working; do not claim
-both-mode readiness before all its resources are available. Cold-start offline
-use, offline reload, and installation are not claimed without a PWA scope.
+FEN fixtures are test inputs, not a public position-editor/import feature. Add
+relevant symmetric and negative cases; these are anchors, not exhaustive coverage.
 
-**REQ-020: Accessible interaction.** All actions work with keyboard and
-pointer/touch. Provide one predictable tab entry into the board, arrow-key
-navigation in the displayed directions, Enter/Space selection and destination
-activation, and Escape cancellation. Tab must leave the board normally. Expose
-square coordinate, piece/color or empty state, selection, and legal-target state
-to assistive technology; announce moves, side to move, check, invalid actions,
-and final results, as well as computer thinking and engine failures. Do not
-announce continuous search scores or steal focus when a computer move arrives.
-Dialogs have names, contained focus, and focus restoration.
-Use visible focus, text contrast of at least 4.5:1 for normal text, and non-text
-control/focus contrast of at least 3:1. Non-board controls have targets of at
-least 44 by 44 CSS pixels; board squares remain at least 32 pixels at a 320-pixel
-viewport. No action depends on dragging, hover, color alone, sound, or animation.
+| Requirements     | Position/actions                                                | Expected result                                                                                                           |
+| ---------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| REQ-001, REQ-003 | Initial position                                                | 32 pieces, White to move, 20 legal moves; e2 targets e3/e4 and g1 targets f3/h3                                           |
+| REQ-002, REQ-003 | Initial position, e2-e5                                         | Rejected; board, turn, and history unchanged                                                                              |
+| REQ-003          | FEN `k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1`, e2-f2                   | Rejected for exposing White's king                                                                                        |
+| REQ-004          | FEN `r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1`                      | Fresh instances allow O-O and O-O-O; king/rook finish on g1/f1 or c1/d1; Undo restores rights                             |
+| REQ-004          | FEN `4kr2/8/8/8/8/8/8/4K2R w K - 0 1`, O-O                      | Rejected because the king would cross attacked f1                                                                         |
+| REQ-004          | Initial position, `1. e4 a6 2. e5 d5`, e5-d6                    | En passant removes d5 pawn; Undo restores it and the opportunity; an intervening move expires the opportunity             |
+| REQ-004          | FEN `7k/P6p/8/8/8/8/8/7K w - - 0 1`, a7-a8                      | All Q/R/B/N choices work; cancelled human promotion changes nothing; complete computer move needs no dialog               |
+| REQ-005, REQ-009 | Local game, `1. f3 e5 2. g4 Qh4#`                               | Black wins `0-1`; moves lock; Undo removes Qh4# and restores Black's turn                                                 |
+| REQ-005          | FEN `7k/5Q2/6K1/8/8/8/8/8 b - - 0 1`                            | Stalemate, not checkmate; `1/2-1/2`                                                                                       |
+| REQ-005          | FEN `7k/8/8/8/8/8/8/K7 w - - 0 1`                               | Material draw; two-knight-versus-king negative fixture is not declared drawn                                              |
+| REQ-005          | Initial position, `1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8` | Third occurrence draws; Undo restores nonterminal prior history                                                           |
+| REQ-005          | FEN `7k/8/8/8/8/8/R7/K7 w - - 99 50`, Ra3                       | Counter reaches 100 and fifty-move draw; pawn/capture cases reset the counter                                             |
+| REQ-007          | Inject random values 0 and just below 1                         | Select first and last complete legal moves respectively; no out-of-range or illegal move; no choice in terminal positions |
+| REQ-008, REQ-009 | Human e4, queued reply, Undo, invoke old callback twice         | Initial position unchanged by stale/duplicate callbacks                                                                   |
+| REQ-007, REQ-009 | Computer game, human e4 then controlled e5, Undo                | Both moves removed; human chooses again, no replacement reply queued                                                      |
+| REQ-008, REQ-010 | Switch to a new Local game before an old reply runs             | Old reply cannot alter the new game even if the move is legal there                                                       |
+| REQ-008          | Hide page or open setup before reply; return/cancel             | Old callback ignored, committed state unchanged, at most one fresh reply resumes                                          |
+| REQ-010          | Human Black, Computer starts; Flip during queued reply          | Exactly one White opening move; logical squares and human ownership unchanged                                             |
+| REQ-013          | Build/copy fixture outside repo                                 | Entry imports resolve inside copied output, license retained, controller/test files absent, no network required to build  |
 
-**REQ-021: Stable responsive layout and assets.** The board remains square
-with eight equal rows and columns, stable dimensions, and legible recognizable
-piece artwork on contrasting light/dark squares. Use bundled, redistributable
-piece assets rather than platform-dependent chess font glyphs. At viewport
-widths 320, 390, 768, and 1280 CSS pixels, and at 200% text zoom, there is no
-horizontal page scrolling, clipped labels, overlapping controls, or obscured
-squares. Vertical scrolling is acceptable. Put history beside the board when
-space permits and below it on narrow screens. Resizing/orientation changes
-preserve the game. Honor reduced-motion preferences. The first viewport is the
-playable experience, with a restrained toolbar and no marketing section.
+### Required Human Browser Scenarios
 
-**REQ-022: Privacy and safety.** No accounts, cookies, analytics, advertising,
-external fonts, remote inference, background requests, or data collection.
-Network activity is limited to the application's own static assets. Restrict
-storage writes/deletion to the application's own save; never clear unrelated
-origin storage. Render data as text or trusted artwork, not executable markup.
-No camera, microphone, location, or notification permissions are required.
+At PR review, test a current desktop Chromium browser and a current mobile
+Safari or Android Chrome browser. Record exact tested versions/devices; do not
+claim a complete cross-browser matrix from those two checks.
 
-**REQ-023: Compatibility and responsiveness.** Support current stable Chrome,
-Edge, Firefox, and Safari at verification time, including Android Chrome and
-iOS Safari for touch use. Record exact tested versions and devices. On a
-documented reference device with unthrottled CPU, 95% of sampled human legal
-moves must visibly update the board, turn, and history within 150 ms of activation,
-excluding promotion-choice time. Applying a current legal computer reply has
-the same target measured from receipt, excluding its search time. Exercise at
-least 40 legal half-moves and state the measurement method. Replay of the same
-initial position and recorded moves must produce identical game state, history,
-rights, and result, independent of board orientation, reload, or input method.
-Time-bounded engine searches are not required to choose identical moves across
-devices; reproducibility applies to replaying the committed moves.
+1. Build and serve the copied output at root and a nested URL. Check that pieces,
+   styles, and modules render and there are no console errors, failed requests,
+   or external-origin calls. Record the actual working commands and URLs.
+2. Play locally with pointer and keyboard, including promotion and the checkmate
+   sequence. Verify illegal moves, history, focus, result, and Undo.
+3. Start Computer games with each human color. Verify one legal reply per turn,
+   correct side selection, and usable controls. Undo/reset during a queued reply
+   must not produce a late move. The basic opponent need not play well.
+4. Check the listed viewport widths, text zoom, touch input, board flip, and
+   selection/status visibility. Capture a readable desktop/mobile screenshot.
+5. Disable networking after readiness; play, undo, flip, and start both modes.
+   Refresh deliberately starts a new Local game when assets can load; no offline
+   reload or preservation claim is made.
 
-### Computer Opponent Requirements
+These checks remain required before human merge even when all pipeline stages
+pass. Report pending checks as pending. This spec does not implement automatic
+enforcement of human browser acceptance in the controller.
 
-**REQ-024: Mode and side selection.** The New game setup offers Local two-player
-and Computer modes. Computer mode offers White or Black for the human and
-Easy, Normal, or Hard difficulty using familiar selection controls. Defaults
-for the first Computer game are White and Normal; later setup dialogs start
-from the current game's settings. Mode, human color, and difficulty take effect
-only when the player confirms a new game, never midway through the existing
-line. Display the current mode, human color, and difficulty outside the dialog.
-Selecting Black assigns White to the computer, which moves first after readiness.
-Local play remains immediately available without an engine or setup requirement.
+### Key Entities and Success Criteria
 
-**REQ-025: Local bounded engine.** Use a proven, maintained browser-capable
-chess engine, separate from the authoritative rules library; chess.js is not
-an opponent engine. Run search off the browser UI thread in a worker, using
-only bundled resources and no remote inference, APIs, or per-move services.
-Keep at most one active search and do not ponder on the human's turn. Include
-full relevant game history when preparing a search, not just visible pieces.
-The rules library remains responsible for legal moves and game endings; engine
-scores cannot override REQ-003 or REQ-009. Browser engine selection, resource
-limits, licensing, and redistributable packaging require maintainer review.
+- **Game:** authoritative rules instance, legal history, mode, human color,
+  turn, result, and position revision. Identical committed moves replay to
+  identical game state; random computer selection itself need not be identical.
+- **View:** orientation, selected/focused square, and pending dialog. Viewing
+  operations do not mutate game rules or control ownership.
+- **Reply:** one scheduled computer choice bound to the current game and revision,
+  cancellable and acceptable at most once.
+- **Portable output:** only the app, compiled game modules, vendored rules, artwork,
+  and redistribution notices, independent of its original repository location.
 
-**REQ-026: Meaningful difficulty.** Easy, Normal, and Hard must map to distinct
-documented supported engine strength settings or search limits. Maximum requested
-search times are 250 ms, 750 ms, and 1,500 ms respectively; an earlier reply can
-be played immediately, with no artificial minimum delay. Research must document
-the chosen engine's mapping, readiness/memory costs, and a reproducible tactical
-test demonstrating that the settings are not merely different labels. Use skill
-controls where supported and do not represent these levels as calibrated Elo,
-guaranteed win rates, or proof that every Hard move is better than every Easy
-move. Tests should assert the requested limits, legal replies, and cancellation,
-not time-sensitive equality to a particular engine move on every device.
-
-**REQ-027: Current-turn replies and cancellation.** Start exactly one search
-when an ongoing ready Computer game reaches the computer's turn, including
-after restoring a saved game. Expose a visible thinking state; block human board
-moves for that turn while keeping applicable Undo, New game, Resign, Flip, and
-Export controls responsive. Bind each search to the game instance, position
-revision/history, side to move, difficulty, and unique request identity. Accept
-at most one final reply only if those bindings still match, no game-changing
-dialog is pending, and the game is ongoing on the computer's turn. Revalidate
-the complete move, including promotion, through the rules library before commit.
-Intermediate evaluations or principal variations are not moves. A legal mating
-or drawing move commits normally and ends further searching.
-
-Cancel and invalidate the search before undo, new-game setup, confirmed mode
-replacement, resignation confirmation, or disposal of the current game. Ignore
-late/duplicate replies even if their move happens to be legal in the new position.
-Cancel a search when the page becomes hidden; after visibility returns, issue
-one fresh search only if the same game still needs a computer move and no dialog
-is open. Never advance a hidden or discarded game using an obsolete reply.
-
-**REQ-028: Engine failure and retry.** If the engine cannot initialize within
-10 seconds after its resources are available, or no valid final reply arrives
-within 10 seconds of a foreground search request, end that attempt and show an
-engine error. The same recovery applies to worker crashes, malformed/illegal
-moves, or an empty/no-move reply while the rules library says the game is ongoing.
-Invalidate the attempt and stop its worker; retain the last committed board,
-history, settings, and result without substituting a move, declaring a chess
-loss, or silently changing mode. Expose a user-initiated Retry computer action
-that starts a fresh bounded attempt from current state, plus applicable Undo,
-New game, and Export. No automatic infinite retries. Returning from a hidden
-page uses a fresh request rather than timing out its intentionally cancelled
-predecessor. Local two-player mode can be chosen through New game even when
-computer assets or execution are unavailable.
-
-### Required Rules Examples
-
-These are test fixtures, not a requirement for a public position editor or FEN
-import UI. FEN means Forsyth-Edwards Notation. Each example must become an
-executable assertion with an independently specified expectation; do not derive
-the expected result from the function under test. Move-by-move human sequences
-and single-ply Undo expectations below use local two-player mode unless stated
-otherwise. Add symmetric black/white and relevant negative cases beyond these anchors.
-
-| Requirement | Starting position or actions | Expected result |
-| --- | --- | --- |
-| REQ-001, REQ-003 | Standard initial position | White to move, 32 pieces, 20 legal moves; e2 has e3/e4 targets and g1 has f3/h3 targets |
-| REQ-003, REQ-004 | Initial position, attempt e2-e5 | Rejected; position, turn, history, and save unchanged |
-| REQ-003 | FEN `k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1`, attempt e2-f2 | Rejected because it exposes White's king to the e8 rook |
-| REQ-005 | FEN `r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1` | O-O puts White king on g1 and rook on f1; on a fresh fixture O-O-O puts them on c1/d1; each is one history move |
-| REQ-005 | FEN `4kr2/8/8/8/8/8/8/4K2R w K - 0 1`, attempt O-O | Rejected because f1 is attacked, although e1 is not in check |
-| REQ-006 | Initial position, `1. e4 a6 2. e5 d5`, then e5-d6 | Legal en passant; White pawn on d6 and Black pawn removed from d5; Undo restores both and the capture opportunity |
-| REQ-007 | FEN `7k/P6p/8/8/8/8/8/7K w - - 0 1`, a7-a8 | Each of Q/R/B/N is offered and produces that piece when chosen; Cancel leaves the fixture unchanged |
-| REQ-008, REQ-012, REQ-017 | Initial position, `1. f3 e5 2. g4 Qh4#` | Black wins by checkmate, result `0-1`, moves locked, export ends with `0-1`; Undo removes Qh4# and reopens with Black to move |
-| REQ-009 | FEN `7k/5Q2/6K1/8/8/8/8/8 b - - 0 1` | Stalemate, not checkmate; result `1/2-1/2` |
-| REQ-009 | FEN `7k/8/8/8/8/8/8/K7 w - - 0 1` | Material draw; no winner |
-| REQ-009, REQ-015 | Initial position, `1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8` | Draw on the third occurrence after 4...Ng8; refreshing after 2...Ng8 does not lose repetition history |
-| REQ-009 | FEN `7k/8/8/8/8/8/R7/K7 w - - 99 50`, then Ra3 | Half-move counter reaches 100 and the game draws by fifty-move rule; corresponding pawn/capture cases reset the counter |
-
-### Required Computer Scenarios
-
-Use controllable engine-response fixtures for timing, cancellation, errors, and
-late-message tests, plus real bundled-engine browser tests for readiness, legal
-play, difficulty mapping, and offline continuity. Fixtures must exercise the
-same reply-validation/commit path as the real engine.
-
-| Requirement | Scenario | Expected result |
-| --- | --- | --- |
-| REQ-024, REQ-027 | New Computer game, human Black | One White search begins after readiness; its legal reply commits once; human input cannot move White's pieces |
-| REQ-012, REQ-027 | Human White plays e4; controlled engine replies e5; Undo | Both moves are removed, White chooses again from the initial position, and no replacement Black search starts |
-| REQ-012, REQ-027 | Human White plays e4; Undo before the Black reply; deliver that reply late | e4 is removed; late reply leaves the restored board, history, result, and save unchanged |
-| REQ-013, REQ-027 | Open New game during a search, deliver its old reply, then cancel the dialog | Old reply is ignored; current game/settings stay intact; exactly one fresh search resumes when appropriate |
-| REQ-024, REQ-027 | Confirm Local two-player while a Computer game has an outstanding reply | New local game starts; even a legal old reply cannot move a piece or overwrite the save |
-| REQ-007, REQ-027 | Computer controls White in the promotion fixture and returns a7-a8=N | A White knight appears on a8 once with no human promotion dialog; missing promotion choice is rejected |
-| REQ-015, REQ-027 | Reload after a human move while waiting for the computer | Human move and selected mode/color/difficulty survive; one new current-position search runs; no phantom reply is restored |
-| REQ-011, REQ-012 | Human resigns during computer thinking, then undoes resignation | Old reply is ignored; undo restores the same ongoing position and starts a fresh search only if the computer is to move |
-| REQ-014, REQ-027 | Flip during a search, then deliver the current reply twice | One move commits on the correct logical squares, human color is unchanged, and the duplicate is ignored |
-| REQ-028 | Malformed reply, illegal move, crashed worker, or a foreground request exceeding 10 seconds | No move or result is invented; error replaces thinking state; retry uses a new identity and controls remain usable |
-| REQ-019, REQ-025 | Load both modes at a nested path, disable network, then play, undo, retry and start another Computer game | Required engine resources remain available; both colors can complete legal turns with no outside/network dependency |
-
-### Key Entities
-
-- **Game:** standard initial position, ordered legal moves, current position and
-  rights, repetition history, active side, result, reason for termination, mode,
-  human color, and difficulty when applicable.
-- **Move:** origin, destination, optional promotion, and derived SAN/capture data;
-  one half-move, also called one ply.
-- **Game action:** a move or explicit resignation/agreement, with enough history
-  to undo the most recent action without losing rule state.
-- **View state:** orientation, focused/selected square, and pending dialog;
-  orientation is saved, but incomplete actions are not committed moves.
-- **Saved game:** bounded, versioned local record that can be validated and
-  replayed, including committed opponent settings but no unfinished engine work;
-  untrusted on read, never a source of executable instructions.
-- **Computer request:** one bounded asynchronous search bound to a particular
-  game, position/history revision, side, difficulty, and request identity; its
-  output is a move proposal, not authority to change a different position.
-- **Release:** the self-contained static folder and redistribution notices,
-  separate from source code, test fixtures, and controller automation.
-
-### Success Criteria
-
-- Two people can play from the initial position to a correct final result using
-  pointer/touch or keyboard, with no illegal or duplicate committed moves.
-- One person can play either color against the local engine at each difficulty.
-  Human controls remain responsive during search; late, invalid, duplicated, or
-  cancelled replies never alter an unrelated or superseded game state.
-- Every requirement has an acceptance-to-evidence mapping. All rules examples,
-  storage-failure cases, and the agreed browser scenarios pass on the final
-  candidate, with no skipped required checks or invented measurements.
-- The copied release loads at both root and nested paths with no missing assets,
-  uncaught errors, or outside requests. The same release completes both-mode
-  offline continuity, including fresh engine initialization, without access to
-  the repository, package registry, or specially configured host headers.
-- Refresh and undo preserve all legal-state information, including castling,
-  en passant, repetition, and explicit endings. A PGN export can be parsed and
-  replayed to the same committed position and result.
-- The viewport, input, accessibility, and response-time requirements are verified
-  with recorded browser/device evidence, not inferred from CSS text or unit-test
-  coverage. Any manual PR checks have named expected results and remain pending
-  until performed.
+Success means both modes are playable with legal chess, the automated examples
+and existing gates pass at the final commit, packaging works without additional
+installed tools, and the documented human checks pass before merge. No stage
+claims a browser, security, portability, or quality result it has not established.
 
 ## Constraints and Non-goals
 
-- Use a proven, maintained chess-rules library for legal move generation,
-  validation, notation, and rule-state tracking. Do not hand-roll a second rules
-  engine, copy one into an allowed path, or substitute permissive piece movement.
-- Use a proven local chess-search engine for the computer opponent; do not
-  hand-roll minimax or call a remote/generative AI service. Keep search proposals
-  separate from authoritative rules and comply with the selected engine's license.
-- No online multiplayer, server, accounts, matchmaking, rating, clocks,
-  tournaments, puzzles, hints, evaluation bar, separate opening-book feature,
-  self-play mode, or variants such as Chess960. These are future product decisions.
-- No PWA/service-worker installation, guaranteed cold-start offline operation,
-  `file://` support, native wrappers, public hosting, or GitHub settings changes.
-- No PGN/FEN import UI, arbitrary starting positions, multiple saved games,
-  branching analysis, redo, annotations, cloud sync, or cross-tab collaboration.
-- No paid assets, runtime CDN calls, telemetry, background downloads, or
-  unreviewed third-party redistribution. Keep visible UI concise and English-only.
-- Fit within at most six approved coding tasks and the existing job, repair,
-  file-count, and text-change budgets. Research must flag an infeasible scope
-  instead of silently dropping requirements or increasing limits.
-- Do not modify controller code, workflow policy, credentials, agent profiles,
-  existing baseline tests, dependency manifests/lockfiles, TypeScript settings,
-  or scanner/coverage configuration during feature jobs. Protected prerequisites
-  require a separate reviewed maintainer change, not approval inferred from this
-  issue. Keep all existing coverage and security thresholds.
+- No protected manifest, lockfile, TypeScript setting, controller, workflow,
+  agent instruction, existing baseline test, scanner, or coverage-policy edits.
+  Never lower thresholds, skip required gates, suppress findings, or claim new
+  permissions from the issue text. Research still requires normal plan approval.
+- The only newly permitted third-party code is the exact rules-library material
+  listed below. Retain its license, record provenance/hashes, and apply existing
+  scanners. No runtime CDN dependency or automatic package download/install.
+- Do not hand-roll chess legality. The computer is expressly a random legal-move
+  practice partner using that library, not a custom search engine. Stronger AI,
+  Stockfish, UCI protocols, WebAssembly, workers, ratings, and difficulty levels
+  are deferred. Do not silently reintroduce them as implementation requirements.
+- No persistence, PGN/FEN import/export UI, resignation/agreed-draw controls,
+  clocks, undo trees/redo, cloud services, multiplayer networking, accounts,
+  puzzles, tutorials, hints, PWA, native wrapper, or deployment automation.
+- Fit at most six coding tasks and the existing 30-file/512,000-byte proposal,
+  job, and repair budgets. No binary assets. Keep third-party files isolated and
+  unchanged; do not minify or encode them to hide contents or evade limits.
 
 ## Context
 
-This document follows the four fields in the
-[Agentic Feature issue form](../.github/ISSUE_TEMPLATE/agentic-feature.yml).
-It is a draft input for research and requester approval, not an approved plan
-or a claim that the current pipeline can execute every requirement unchanged.
+This document follows the four fields of the
+[Agentic Feature form](../.github/ISSUE_TEMPLATE/agentic-feature.yml). It is a
+replacement scope for a new issue, not a claim that issue #27's prerequisites
+were installed. Do not reopen or retry the closed lifecycle as part of this work.
 
-### Research and Maintainer Prerequisites
+### Explicit Source Dependency
 
-The current [manifest](../package.json) contains no chess-rules library,
-computer-opponent engine, browser-test framework, or browser bundler. The existing build compiles
-TypeScript; it does not by itself establish a self-contained browser release.
-The [policy](../.github/sdlc/policy.json) protects manifests and configuration,
-and the [validation runner](../src/validate.ts) targets Node tests rather than
-browser rendering. Consequently, the current draft **requires maintainer
-prerequisites before implementation is runnable under this pipeline**.
+Use `chess.js` version **1.4.0**, distributed under **BSD-2-Clause**, from the
+[versioned npm archive](https://registry.npmjs.org/chess.js/-/chess.js-1.4.0.tgz).
+The [official documentation](https://jhlywa.github.io/chess.js/) covers legal
+moves, history, undo, draw detection, and an example of random legal-move play.
+The published ESM file has no runtime package dependencies. Include only the
+following UTF-8 text files under `apps/chess/vendor/`, plus a short provenance
+record, using the exact bytes from the archive:
 
-Research must recommend the application architecture on product fit, separately
-from these pipeline limits, and identify the smallest reviewed prerequisites:
+| Archive member                  | Proposed app filename | Bytes  | SHA-256                                                            |
+| ------------------------------- | --------------------- | ------ | ------------------------------------------------------------------ |
+| `package/dist/esm/chess.js`     | `chess.js`            | 107052 | `76c7c34f0e2e9ab076521a5d6fe786a9cce537bb1b6f29d32a9c9970b5b232d2` |
+| `package/dist/types/chess.d.ts` | `chess.d.ts`          | 9163   | `29f09463bf7aedb31c93b4f692b9001eb5529b9dcc52829a1c0d5895e2f2e8f8` |
+| `package/LICENSE`               | `LICENSE.txt`         | 1315   | `0b3a3c2b4432a26bb18f9d06f5bba4de015bcc980306b7db28b06025495e2186` |
 
-1. Select and pin a rules library after checking its current license, behavior,
-   maintenance, browser distribution, and compatibility with REQ-009. The
-   [chess.js documentation](https://jhlywa.github.io/chess.js/), consulted on
-   2026-09-16, describes legal moves, special moves, history, undo, SAN/PGN, and
-   draw detection; it is a candidate, not an installed dependency or an AI engine.
-2. Select and pin a maintained browser-capable opponent engine with documented
-  strength controls/search limits, worker support, and a build that does not
-  require cross-origin isolation or SharedArrayBuffer. Review license and
-  redistribution obligations, including corresponding source where required,
-  and document the strength mapping and memory/resource costs. Verify it runs
-  offline on the required browsers. Neither chess.js nor a mocked opponent is
-  a substitute for this engine dependency.
-3. Establish a reproducible build/package path that includes the approved libraries,
-  engine workers and any WebAssembly/evaluation resources, and all assets within
-  one static release folder. Supply the exact build command,
-   release entry point, serving command and working directory. Verify both root
-  and nested-path URLs and offline fresh-worker initialization after cancellation;
-  a development server or a warm engine alone is not release evidence.
-4. Establish approved real-browser validation and artifact capture. Browser
-   tooling may need protected dependency/workflow changes before the feature job.
-   Missing support must be reported as `blocked`, not replaced by text-pattern
-   assertions, an unapproved package download, or a claim that Node tests prove
-   browser behavior.
-5. Confirm allowed application, test, documentation, and generated-output paths
-   and dependency notices. Keep generated release artifacts separate from source
-   proposals; the text-only collector is not a binary release publishing system.
+These sizes and hashes were inspected locally on 2026-09-16, totaling 117,530
+bytes before provenance text, not a scanner pass or perpetual compatibility
+guarantee. Verify them on retrieval. Do not add the archive, its package manifest,
+source map, npm cache, or other package files to the repository. Approved coding
+tasks may retrieve these specified files without running package scripts or
+installing anything into the project. If the archive is unavailable, bytes differ,
+licensing cannot be honored, or security gates reject it, report that concrete
+blocker. Do not substitute another version or waive a finding automatically.
 
-Land any prerequisites through normal maintainer review before approved feature
-execution. Then obtain a supported research plan and fresh approval against the
-trusted revision. This draft does not grant an exception to protected paths.
+This is an explicit change to the draft's application dependency requirements,
+not an exception to protected paths. The current
+[change validator](../src/changes.ts) allows bounded, unprotected text proposals
+from the code stage; `sourcePaths` describes coverage inclusion, not its entire
+edit allowlist. The library is not installed in a manifest, so npm audit does
+not provide its dependency coverage. Preserve full-source CodeQL/secret checks
+and review the pinned component separately; do not claim npm audit scanned it.
 
-### Implementation and Verification Boundaries
+### Existing Toolchain and Verification
 
-- Prefer an isolated application module and UI with one rules-state owner. The
-  same rules and game actions must drive the browser and application tests;
-  do not maintain test-only or browser-only copies of chess behavior. The search
-  engine proposes moves to that owner and does not mutate the board directly.
-- Derive tests from the numbered requirements and examples, including castling
-  after a king/rook moves back, castling out of/through check, expired or pinned
-  en passant, both promotion colors and every promotion piece, material draw
-  exclusions, repetition across reload, undo of every special move and ending,
-  corrupt/incompatible saves, denied/quota-exceeded storage, and failed assets.
-- Add current-request tests for both human colors, difficulty selection,
-  computer promotion, round-based Undo, reload while thinking, mode changes,
-  hidden-page cancellation, duplicate/late replies, stale legal replies, illegal
-  replies, and bounded failure/retry. Assert state and history preservation, not
-  only that a worker received a stop message. Use controllable fixtures for races
-  and real engine execution for browser compatibility and strength/packaging claims.
-- Run the repository's required `npm ci --ignore-scripts` and `npm run verify`
-  in addition to approved application/browser checks. Report their actual scope:
-  typecheck, coverage, and build are not browser or CodeQL execution. Measure
-  coverage against the new plan's baseline and retain independent scanner gates.
-- Exercise the built release in Chromium, Firefox, and WebKit with keyboard and
-  touch emulation, and record a real mobile Safari/Chrome smoke check at PR
-  review. Engine emulation is not evidence of a physical-device test. A plan may
-  assign those real-device checks to humans, but must name them and require them
-  before merge; required automated browser checks cannot be waived silently.
-- Capture readable desktop/mobile screenshots showing the board and pieces,
-  inspect console/network failures, and assert that a legal move changes the
-  rendered position and history. Include promotion, checkmate, flip, undo,
-  reload, export, network loss, nested-path hosting, and storage-failure flows.
-  Exercise both play modes, all difficulty settings, engine startup/failure,
-  responsive controls during thinking, and offline initialization after retry.
-  Screenshots support evidence; they do not replace interaction assertions.
-- Validate PGN with the existing parser in a fresh instance and compare expected
-  final state. Use independent expected moves/results for representative cases;
-  agreement between two calls to the same faulty code is not the sole test oracle.
-- Bind the final evidence to the source commit and the built release tested.
-  Separate executed checks, unavailable tooling, and pending human checks.
-  Passing an earlier commit or merely returning a schema-valid report is not
-  proof that the final app satisfies this specification.
+- Put authored game behavior in `src/chess/**/*.ts`, UI/vendor/packaging sources
+  in `apps/chess/`, new discovered Node tests in `test/chess/**/*.test.ts`, and
+  launch/verification documentation in allowed documentation paths. Use the
+  existing [compiler](../tsconfig.json), [manifest](../package.json),
+  [policy](../.github/sdlc/policy.json), and [validator](../src/validate.ts)
+  unchanged. No preparatory workflow or dependency-install task is required by
+  this scope; source-library acquisition belongs to the approved feature tasks.
+- Preserve relative imports when packaging. One feasible layout copies compiled
+  `src/chess/` and static `apps/chess/` beneath the portable folder, with a root
+  HTML entry that loads the nested app module. A TypeScript game module can then
+  import `../../apps/chess/vendor/chess.js`, with its adjacent declaration file,
+  both in source and in the copied output. Verify the actual final layout rather
+  than assuming a build directory is reachable from a differently rooted server.
+- Node package tests should compile/copy into temporary output and verify the
+  same entrypoint/import layout used by the browser, with no live GitHub calls.
+  All authored game logic remains covered; vendored JavaScript is not a reason
+  to move new application behavior outside the fixed source-coverage patterns.
+- Run `npm ci --ignore-scripts` and `npm run verify` with the existing lockfile,
+  plus focused game/package tests. The hosted SDLC validator directly runs Node
+  tests, so package/import verification must be discoverable through those tests,
+  not only through an unused custom npm command. Preserve baseline non-regression.
+- Research should assess this revised scope, not restore the earlier mandatory
+  engine/bundler/browser-tooling prerequisites. Missing optional browser tooling
+  is handled by the named human checks in REQ-015. Genuine rule, license, security,
+  compatibility, or budget blockers still require an honest `blocked` report.
+  This draft removes the known tooling contradiction; it cannot guarantee that
+  every future run or review will pass.
