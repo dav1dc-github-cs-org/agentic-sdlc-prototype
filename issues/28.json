@@ -133,7 +133,8 @@
     "attempt": 1,
     "createdAt": "2026-09-17T01:48:58.311Z",
     "dispatchedAt": "2026-09-17T01:48:59.510Z",
-    "runId": 35172001612
+    "runId": 35172001612,
+    "costedRun": 35172001612
   },
   "evidence": [],
   "processedEvents": [
@@ -143,10 +144,10 @@
   "repairs": 0,
   "failures": 1,
   "spend": {
-    "runs": 7,
-    "runnerMs": 4802000,
-    "credits": 694.95797,
-    "nearLimit": 0,
+    "runs": 8,
+    "runnerMs": 6050000,
+    "credits": 944.2973900000001,
+    "nearLimit": 1,
     "preempted": 0,
     "models": [
       "claude-sonnet-5"
@@ -435,6 +436,43 @@
           ]
         },
         "runnerMs": 1915000
+      }
+    },
+    {
+      "job": {
+        "id": "28-8",
+        "stage": "code",
+        "inputSha": "46a13c1983d8378cea7b74acf5f7b8f119882bf7",
+        "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+        "createdAt": "2026-09-17T01:48:58.311Z",
+        "taskId": "static-app-and-packaging",
+        "attempt": 1,
+        "runId": 35172001612
+      },
+      "persona": "sdlc-code",
+      "observed": {
+        "runnerMs": 1248000,
+        "credits": 249.33942,
+        "preempted": false,
+        "creditLimit": 300,
+        "models": [
+          "claude-sonnet-5"
+        ],
+        "requestedModel": "auto",
+        "tokenUsage": {
+          "status": "available",
+          "models": [
+            {
+              "model": "claude-sonnet-5",
+              "requests": 81,
+              "inputTokens": 6305,
+              "outputTokens": 95615,
+              "cacheReadTokens": 6314846,
+              "cacheWriteTokens": 104666
+            }
+          ]
+        }
       }
     }
   ],
