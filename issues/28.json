@@ -100,7 +100,8 @@
         "computer-opponent",
         "session-reply-queue"
       ],
-      "completed": false
+      "completed": false,
+      "issueNumber": 33
     },
     {
       "id": "chess-documentation",
