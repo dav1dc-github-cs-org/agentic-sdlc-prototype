@@ -32,8 +32,8 @@
         "No changes are made to package.json, package-lock.json, or any protected path"
       ],
       "dependsOn": [],
-      "completed": false,
-      "issueNumber": 29
+      "issueNumber": 29,
+      "completed": false
     },
     {
       "id": "core-game-module",
@@ -47,8 +47,8 @@
       "dependsOn": [
         "vendor-chessjs"
       ],
-      "completed": false,
-      "issueNumber": 30
+      "issueNumber": 30,
+      "completed": false
     },
     {
       "id": "computer-opponent",
@@ -64,8 +64,8 @@
       "dependsOn": [
         "vendor-chessjs"
       ],
-      "completed": false,
-      "issueNumber": 31
+      "issueNumber": 31,
+      "completed": false
     },
     {
       "id": "session-reply-queue",
@@ -81,8 +81,8 @@
       "dependsOn": [
         "vendor-chessjs"
       ],
-      "completed": false,
-      "issueNumber": 32
+      "issueNumber": 32,
+      "completed": false
     },
     {
       "id": "static-app-and-packaging",
@@ -100,8 +100,8 @@
         "computer-opponent",
         "session-reply-queue"
       ],
-      "completed": false,
-      "issueNumber": 33
+      "issueNumber": 33,
+      "completed": false
     },
     {
       "id": "chess-documentation",
@@ -116,10 +116,11 @@
       "dependsOn": [
         "static-app-and-packaging"
       ],
-      "completed": false,
-      "issueNumber": 34
+      "issueNumber": 34,
+      "completed": false
     }
   ],
+  "tasksLinked": true,
   "retiredTasks": [],
   "job": {
     "id": "28-3",
@@ -131,7 +132,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-17T00:35:33.425Z",
-    "dispatchedAt": "2026-09-17T00:35:34.910Z"
+    "dispatchedAt": "2026-09-17T00:35:34.910Z",
+    "runId": 35167186196
   },
   "evidence": [],
   "processedEvents": [
@@ -201,13 +203,12 @@
         "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
         "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
         "createdAt": "2026-09-17T00:29:08.775Z",
+        "runId": 35166749867,
         "taskId": null,
-        "attempt": 1,
-        "runId": 35166749867
+        "attempt": 1
       },
       "persona": "sdlc-decompose",
       "observed": {
-        "runnerMs": 276000,
         "credits": 26.8061,
         "preempted": false,
         "creditLimit": 300,
@@ -227,7 +228,8 @@
               "cacheWriteTokens": 43396
             }
           ]
-        }
+        },
+        "runnerMs": 276000
       },
       "acceptedResult": {
         "outcome": "pass",
@@ -235,6 +237,5 @@
       }
     }
   ],
-  "feedback": "",
-  "tasksLinked": true
+  "feedback": ""
 }
