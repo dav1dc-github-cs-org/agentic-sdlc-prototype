@@ -131,7 +131,8 @@
     "taskId": null,
     "feedback": "Required checks failed or did not run: codeql. Inspect https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/35174100863.\n\nCodeQL diagnostics (untrusted scanner data):\nCodeQL found 3 blocking or unclassified findings\njs/incomplete-sanitization at apps/chess/vendor/chess.js:3307 (security severity 7.8)\njs/incomplete-sanitization at apps/chess/vendor/chess.js:3307 (security severity 7.8)\njs/regex/missing-regexp-anchor at test/github.test.ts:621 (security severity 7.8)",
     "attempt": 1,
-    "createdAt": "2026-09-17T02:23:09.941Z"
+    "createdAt": "2026-09-17T02:23:09.941Z",
+    "dispatchedAt": "2026-09-17T02:23:11.434Z"
   },
   "evidence": [],
   "processedEvents": [
