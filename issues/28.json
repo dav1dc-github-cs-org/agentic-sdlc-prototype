@@ -122,11 +122,22 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "28-11",
+    "stage": "code",
+    "inputSha": "f2423a9350009ec8768ebfa3249c27e77a4e7cbd",
+    "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+    "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+    "taskId": null,
+    "feedback": "Required checks failed or did not run: codeql. Inspect https://github.com/dav1dc-github-cs-org/agentic-sdlc-prototype/actions/runs/35174100863.\n\nCodeQL diagnostics (untrusted scanner data):\nCodeQL found 3 blocking or unclassified findings\njs/incomplete-sanitization at apps/chess/vendor/chess.js:3307 (security severity 7.8)\njs/incomplete-sanitization at apps/chess/vendor/chess.js:3307 (security severity 7.8)\njs/regex/missing-regexp-anchor at test/github.test.ts:621 (security severity 7.8)",
+    "attempt": 1,
+    "createdAt": "2026-09-17T02:23:09.941Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5706558011"
   ],
-  "sequence": 10,
+  "sequence": 11,
   "repairs": 1,
   "failures": 0,
   "spend": {
