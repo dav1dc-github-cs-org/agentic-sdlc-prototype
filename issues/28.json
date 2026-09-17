@@ -132,7 +132,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-17T00:43:53.800Z",
-    "dispatchedAt": "2026-09-17T00:43:54.885Z"
+    "dispatchedAt": "2026-09-17T00:43:54.885Z",
+    "runId": 35167742884
   },
   "evidence": [],
   "processedEvents": [
@@ -243,13 +244,12 @@
         "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
         "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
         "createdAt": "2026-09-17T00:35:33.425Z",
+        "runId": 35167186196,
         "taskId": "vendor-chessjs",
-        "attempt": 1,
-        "runId": 35167186196
+        "attempt": 1
       },
       "persona": "sdlc-code",
       "observed": {
-        "runnerMs": 418000,
         "credits": 57.83723,
         "preempted": false,
         "creditLimit": 300,
@@ -269,7 +269,8 @@
               "cacheWriteTokens": 57401
             }
           ]
-        }
+        },
+        "runnerMs": 418000
       },
       "acceptedResult": {
         "outcome": "pass",
