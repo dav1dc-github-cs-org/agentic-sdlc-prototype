@@ -122,11 +122,22 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "28-6",
+    "stage": "code",
+    "inputSha": "fc05c7c480c4c8700622af86e89a323b683218bd",
+    "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+    "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+    "taskId": "session-reply-queue",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-17T01:01:53.550Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5706558011"
   ],
-  "sequence": 5,
+  "sequence": 6,
   "repairs": 0,
   "failures": 0,
   "spend": {
