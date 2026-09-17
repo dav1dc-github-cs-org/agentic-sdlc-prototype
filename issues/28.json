@@ -121,11 +121,22 @@
     }
   ],
   "retiredTasks": [],
+  "job": {
+    "id": "28-3",
+    "stage": "code",
+    "inputSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+    "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+    "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+    "taskId": "vendor-chessjs",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-17T00:35:33.425Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5706558011"
   ],
-  "sequence": 2,
+  "sequence": 3,
   "repairs": 0,
   "failures": 0,
   "spend": {
