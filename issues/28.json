@@ -133,7 +133,8 @@
     "attempt": 1,
     "createdAt": "2026-09-17T02:21:24.157Z",
     "dispatchedAt": "2026-09-17T02:21:25.334Z",
-    "runId": 35174100863
+    "runId": 35174100863,
+    "costedRun": 35174100863
   },
   "evidence": [],
   "processedEvents": [
@@ -143,8 +144,8 @@
   "repairs": 0,
   "failures": 0,
   "spend": {
-    "runs": 9,
-    "runnerMs": 6582000,
+    "runs": 10,
+    "runnerMs": 6660000,
     "credits": 1042.1198100000001,
     "nearLimit": 1,
     "preempted": 0,
@@ -517,6 +518,25 @@
       "acceptedResult": {
         "outcome": "pass",
         "outputSha": "f2423a9350009ec8768ebfa3249c27e77a4e7cbd"
+      }
+    },
+    {
+      "job": {
+        "id": "28-10",
+        "stage": "scan",
+        "inputSha": "f2423a9350009ec8768ebfa3249c27e77a4e7cbd",
+        "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+        "createdAt": "2026-09-17T02:21:24.157Z",
+        "taskId": null,
+        "attempt": 1,
+        "runId": 35174100863
+      },
+      "persona": null,
+      "observed": {
+        "runnerMs": 78000,
+        "credits": 0,
+        "preempted": false
       }
     }
   ],
