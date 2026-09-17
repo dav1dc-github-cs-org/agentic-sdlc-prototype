@@ -131,7 +131,8 @@
     "taskId": "session-reply-queue",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-17T01:01:53.550Z"
+    "createdAt": "2026-09-17T01:01:53.550Z",
+    "dispatchedAt": "2026-09-17T01:01:54.580Z"
   },
   "evidence": [],
   "processedEvents": [
