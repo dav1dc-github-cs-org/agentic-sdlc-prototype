@@ -131,7 +131,8 @@
     "taskId": "computer-opponent",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-17T00:54:03.746Z"
+    "createdAt": "2026-09-17T00:54:03.746Z",
+    "dispatchedAt": "2026-09-17T00:54:05.559Z"
   },
   "evidence": [],
   "processedEvents": [
