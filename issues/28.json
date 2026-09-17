@@ -131,7 +131,8 @@
     "taskId": "core-game-module",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-17T00:43:53.800Z"
+    "createdAt": "2026-09-17T00:43:53.800Z",
+    "dispatchedAt": "2026-09-17T00:43:54.885Z"
   },
   "evidence": [],
   "processedEvents": [
