@@ -32,7 +32,8 @@
         "No changes are made to package.json, package-lock.json, or any protected path"
       ],
       "dependsOn": [],
-      "completed": false
+      "completed": false,
+      "issueNumber": 29
     },
     {
       "id": "core-game-module",
