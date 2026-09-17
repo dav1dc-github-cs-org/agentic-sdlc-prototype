@@ -122,11 +122,22 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "28-7",
+    "stage": "code",
+    "inputSha": "46a13c1983d8378cea7b74acf5f7b8f119882bf7",
+    "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+    "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+    "taskId": "static-app-and-packaging",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-17T01:15:43.563Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5706558011"
   ],
-  "sequence": 6,
+  "sequence": 7,
   "repairs": 0,
   "failures": 0,
   "spend": {
