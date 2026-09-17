@@ -131,7 +131,8 @@
     "taskId": "static-app-and-packaging",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-17T01:48:58.311Z"
+    "createdAt": "2026-09-17T01:48:58.311Z",
+    "dispatchedAt": "2026-09-17T01:48:59.510Z"
   },
   "evidence": [],
   "processedEvents": [
