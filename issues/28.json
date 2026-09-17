@@ -47,7 +47,8 @@
       "dependsOn": [
         "vendor-chessjs"
       ],
-      "completed": false
+      "completed": false,
+      "issueNumber": 30
     },
     {
       "id": "computer-opponent",
