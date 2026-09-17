@@ -132,7 +132,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-17T00:54:03.746Z",
-    "dispatchedAt": "2026-09-17T00:54:05.559Z"
+    "dispatchedAt": "2026-09-17T00:54:05.559Z",
+    "runId": 35168409764
   },
   "evidence": [],
   "processedEvents": [
@@ -284,13 +285,12 @@
         "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
         "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
         "createdAt": "2026-09-17T00:43:53.800Z",
+        "runId": 35167742884,
         "taskId": "core-game-module",
-        "attempt": 1,
-        "runId": 35167742884
+        "attempt": 1
       },
       "persona": "sdlc-code",
       "observed": {
-        "runnerMs": 520000,
         "credits": 109.1669,
         "preempted": false,
         "creditLimit": 300,
@@ -310,7 +310,8 @@
               "cacheWriteTokens": 83420
             }
           ]
-        }
+        },
+        "runnerMs": 520000
       },
       "acceptedResult": {
         "outcome": "pass",
