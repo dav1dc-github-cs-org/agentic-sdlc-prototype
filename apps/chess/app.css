@@ -1,0 +1,344 @@
+/* Portable Chess Practice - responsive, accessible board styling (REQ-011). */
+
+:root {
+  color-scheme: light dark;
+  --square-light: #eeeed2;
+  --square-dark: #769656;
+  --square-selected: #f6f669;
+  --square-legal: #7a9c59;
+  --square-check: #e6544b;
+  --square-last-move: #baca44;
+  --focus-ring: #1a5fb4;
+  --panel-bg: #1f1f24;
+  --panel-fg: #f2f2f2;
+  --control-min: 44px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 0.5rem;
+  gap: 0.5rem;
+}
+
+.app-header h1 {
+  font-size: 1.25rem;
+  margin: 0 0 0.25rem;
+}
+
+.status-line {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.board-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1 1 320px;
+  max-width: 640px;
+}
+
+.board-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mode-label {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 2px solid #444;
+  min-width: 256px;
+}
+
+.square {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.square.light {
+  background: var(--square-light);
+  color: #333;
+}
+
+.square.dark {
+  background: var(--square-dark);
+  color: #eee;
+}
+
+.square.selected::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--square-selected);
+  opacity: 0.65;
+}
+
+.square.legal-target::before {
+  content: '';
+  position: absolute;
+  width: 32%;
+  height: 32%;
+  border-radius: 50%;
+  background: var(--square-legal);
+  opacity: 0.75;
+}
+
+.square.legal-capture::before {
+  content: '';
+  position: absolute;
+  inset: 8%;
+  border-radius: 50%;
+  border: 4px solid var(--square-legal);
+  background: transparent;
+  width: auto;
+  height: auto;
+}
+
+.square.last-move::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--square-last-move);
+  opacity: 0.45;
+}
+
+.square.in-check::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--square-check);
+  opacity: 0.55;
+}
+
+.square:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: -3px;
+  z-index: 1;
+}
+
+.square .piece-svg {
+  width: 82%;
+  height: 82%;
+  pointer-events: none;
+}
+
+.coord-file,
+.coord-rank {
+  position: absolute;
+  font-size: 0.55rem;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.coord-file {
+  bottom: 2px;
+  right: 3px;
+}
+
+.coord-rank {
+  top: 2px;
+  left: 3px;
+}
+
+.hint {
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin: 0;
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  flex: 0 1 260px;
+  min-width: 220px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+button {
+  min-width: var(--control-min);
+  min-height: var(--control-min);
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #666;
+  background: #33333a;
+  color: var(--panel-fg);
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+button:hover {
+  background: #40404a;
+}
+
+button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.history-panel {
+  background: #26262c;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history-panel h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.4rem;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.9rem;
+}
+
+.history-list li {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr 1fr;
+  gap: 0.4rem;
+}
+
+.history-move-number {
+  opacity: 0.7;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 10;
+}
+
+.dialog-backdrop[hidden] {
+  display: none;
+}
+
+.dialog {
+  background: #26262c;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  max-width: 420px;
+  width: 100%;
+}
+
+.dialog fieldset {
+  border: 1px solid #555;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+}
+
+.dialog label {
+  display: block;
+  margin: 0.25rem 0;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.promotion-choices {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.promotion-choices button {
+  width: 56px;
+  height: 56px;
+}
+
+.promotion-choices button svg {
+  width: 100%;
+  height: 100%;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .board {
+    min-width: 288px;
+  }
+}

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portable Chess Practice</title>
+<meta name="description" content="Untimed local two-player chess and practice against a basic computer opponent.">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="app-header">
+    <h1>Portable Chess Practice</h1>
+    <p class="status-line" id="status-line" role="status" aria-live="polite">White to move</p>
+  </header>
+
+  <main class="layout">
+    <section class="board-section" aria-label="Chess board">
+      <div class="board-toolbar">
+        <span class="mode-label" id="mode-label">Local two-player</span>
+      </div>
+      <div
+        class="board"
+        id="board"
+        role="grid"
+        aria-label="Chess board, 8 by 8"
+      ></div>
+      <p class="hint" id="board-hint">Select a piece, then choose a highlighted destination. Press Escape to cancel a selection.</p>
+    </section>
+
+    <aside class="side-panel" aria-label="Game controls and history">
+      <div class="controls" role="group" aria-label="Game controls">
+        <button type="button" id="new-game-btn">New game&hellip;</button>
+        <button type="button" id="undo-btn">Undo</button>
+        <button type="button" id="flip-btn">Flip board</button>
+      </div>
+
+      <div class="history-panel" aria-label="Move history">
+        <h2>Move history</h2>
+        <ol class="history-list" id="history-list"></ol>
+      </div>
+    </aside>
+  </main>
+
+  <div class="dialog-backdrop" id="new-game-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-game-title" id="new-game-dialog">
+      <h2 id="new-game-title">Start a new game</h2>
+      <fieldset>
+        <legend>Mode</legend>
+        <label><input type="radio" name="mode" value="local" checked> Local two-player</label>
+        <label><input type="radio" name="mode" value="computer"> Vs. Basic computer</label>
+      </fieldset>
+      <fieldset id="human-color-fieldset">
+        <legend>Play as (Computer mode)</legend>
+        <label><input type="radio" name="human-color" value="w" checked> White</label>
+        <label><input type="radio" name="human-color" value="b"> Black</label>
+      </fieldset>
+      <div class="dialog-actions">
+        <button type="button" id="new-game-cancel">Cancel</button>
+        <button type="button" id="new-game-confirm">Start game</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dialog-backdrop" id="promotion-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-title" id="promotion-dialog">
+      <h2 id="promotion-title">Choose a promotion piece</h2>
+      <div class="promotion-choices" id="promotion-choices"></div>
+      <div class="dialog-actions">
+        <button type="button" id="promotion-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dialog-backdrop" id="error-backdrop" hidden>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="error-title" id="error-dialog">
+      <h2 id="error-title">Computer move error</h2>
+      <p id="error-message"></p>
+      <div class="dialog-actions">
+        <button type="button" id="error-undo">Undo</button>
+        <button type="button" id="error-new-game">New game</button>
+        <button type="button" id="error-retry">Retry</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="visually-hidden" id="announcer" role="status" aria-live="assertive"></p>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
