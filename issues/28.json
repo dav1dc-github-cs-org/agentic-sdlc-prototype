@@ -81,7 +81,8 @@
       "dependsOn": [
         "vendor-chessjs"
       ],
-      "completed": false
+      "completed": false,
+      "issueNumber": 32
     },
     {
       "id": "static-app-and-packaging",
