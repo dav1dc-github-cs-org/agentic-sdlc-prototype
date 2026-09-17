@@ -133,7 +133,8 @@
     "attempt": 1,
     "createdAt": "2026-09-17T00:43:53.800Z",
     "dispatchedAt": "2026-09-17T00:43:54.885Z",
-    "runId": 35167742884
+    "runId": 35167742884,
+    "costedRun": 35167742884
   },
   "evidence": [],
   "processedEvents": [
@@ -143,9 +144,9 @@
   "repairs": 0,
   "failures": 0,
   "spend": {
-    "runs": 3,
-    "runnerMs": 1226000,
-    "credits": 166.1069,
+    "runs": 4,
+    "runnerMs": 1746000,
+    "credits": 275.2738,
     "nearLimit": 0,
     "preempted": 0,
     "models": [
@@ -275,6 +276,43 @@
       "acceptedResult": {
         "outcome": "pass",
         "outputSha": "cc026f2e9552054eae9452c230aaacb9db224b9d"
+      }
+    },
+    {
+      "job": {
+        "id": "28-4",
+        "stage": "code",
+        "inputSha": "cc026f2e9552054eae9452c230aaacb9db224b9d",
+        "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+        "createdAt": "2026-09-17T00:43:53.800Z",
+        "taskId": "core-game-module",
+        "attempt": 1,
+        "runId": 35167742884
+      },
+      "persona": "sdlc-code",
+      "observed": {
+        "runnerMs": 520000,
+        "credits": 109.1669,
+        "preempted": false,
+        "creditLimit": 300,
+        "models": [
+          "claude-sonnet-5"
+        ],
+        "requestedModel": "auto",
+        "tokenUsage": {
+          "status": "available",
+          "models": [
+            {
+              "model": "claude-sonnet-5",
+              "requests": 56,
+              "inputTokens": 6255,
+              "outputTokens": 23153,
+              "cacheReadTokens": 3195395,
+              "cacheWriteTokens": 83420
+            }
+          ]
+        }
       }
     }
   ],
