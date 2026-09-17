@@ -183,6 +183,35 @@ policy as SDLC. Local `npm run verify` does not run CodeQL.
 Some negative fixtures deliberately run failing child tests; the outer test
 runner must still finish successfully.
 
+### Turtle Graphics Playground
+
+`npm run build` also compiles [`src/turtle-graphics/engine.ts`](src/turtle-graphics/engine.ts)
+to `dist/src/turtle-graphics/engine.js`. The hand-authored browser entry point
+[`apps/turtle-graphics/app.js`](apps/turtle-graphics/app.js) imports that
+compiled file directly by relative path, so the engine must be built before the
+page is served. `apps/**` is intentionally outside the root `tsconfig.json`
+`include` globs and is not compiled itself.
+
+```sh
+npm run build
+npx --yes http-server apps/turtle-graphics -p 8080
+```
+
+Then open `http://localhost:8080/index.html` in a browser. Any static file
+server that preserves relative paths works equally well; the page loads no
+external assets, cookies, storage, or network requests beyond its own files.
+
+The playground is a six-button drawing surface for children aged 5-7: Pen Up,
+Pen Down, Move Forward, Move Backwards, Turn Left 90 degrees, Turn Right 90
+degrees. The turtle starts at the center of a 400x400 logical board, facing
+up, with the pen down. Node tests
+([`test/turtle-graphics/engine.test.ts`](test/turtle-graphics/engine.test.ts),
+[`test/turtle-graphics/ui.test.ts`](test/turtle-graphics/ui.test.ts)) cover the
+movement/turn/pen engine and statically validate the served markup and script;
+they do not execute the page in a browser, so resize, touch, and
+keyboard-focus behavior still need a manual check in an actual browser before
+relying on it.
+
 The agent workflow is compiled with GitHub CLI and the pinned extension:
 
 ```sh
@@ -210,6 +239,8 @@ compiler upgrades require deliberate review and validation.
 | [Policy](.github/sdlc/policy.json) | File restrictions, test discovery, thresholds, and execution budgets |
 | [Agent workflow](.github/workflows/sdlc-agent.md) | Fresh Copilot execution for each specialized role |
 | [Check workflow](.github/workflows/sdlc-checks.yml) | Deterministic security and testing jobs |
+| [Turtle graphics engine](src/turtle-graphics/engine.ts) | Pure, framework-free reducer for the six-button children's drawing playground |
+| [Turtle graphics playground](apps/turtle-graphics/index.html) | Static browser page and hand-authored entry point that renders the engine's state |
 
 Authoritative JSON state is stored on `sdlc-state`. Writes use the previous
 content SHA to reject conflicting updates. The controller is serialized;
