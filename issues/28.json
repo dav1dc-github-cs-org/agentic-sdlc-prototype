@@ -33,7 +33,8 @@
     "attempt": 1,
     "createdAt": "2026-09-17T00:29:08.775Z",
     "dispatchedAt": "2026-09-17T00:29:10.235Z",
-    "runId": 35166749867
+    "runId": 35166749867,
+    "costedRun": 35166749867
   },
   "evidence": [],
   "processedEvents": [
@@ -43,9 +44,9 @@
   "repairs": 0,
   "failures": 0,
   "spend": {
-    "runs": 1,
-    "runnerMs": 532000,
-    "credits": 81.46357,
+    "runs": 2,
+    "runnerMs": 808000,
+    "credits": 108.26967,
     "nearLimit": 0,
     "preempted": 0,
     "models": [
@@ -93,6 +94,43 @@
       "acceptedResult": {
         "outcome": "pass",
         "outputSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7"
+      }
+    },
+    {
+      "job": {
+        "id": "28-2",
+        "stage": "decompose",
+        "inputSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+        "createdAt": "2026-09-17T00:29:08.775Z",
+        "taskId": null,
+        "attempt": 1,
+        "runId": 35166749867
+      },
+      "persona": "sdlc-decompose",
+      "observed": {
+        "runnerMs": 276000,
+        "credits": 26.8061,
+        "preempted": false,
+        "creditLimit": 300,
+        "models": [
+          "claude-sonnet-5"
+        ],
+        "requestedModel": "auto",
+        "tokenUsage": {
+          "status": "available",
+          "models": [
+            {
+              "model": "claude-sonnet-5",
+              "requests": 14,
+              "inputTokens": 5449,
+              "outputTokens": 5770,
+              "cacheReadTokens": 454865,
+              "cacheWriteTokens": 43396
+            }
+          ]
+        }
       }
     }
   ],
