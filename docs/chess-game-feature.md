@@ -265,6 +265,114 @@ These checks remain required before human merge even when all pipeline stages
 pass. Report pending checks as pending. This spec does not implement automatic
 enforcement of human browser acceptance in the controller.
 
+### Build, Package, and Serve (REQ-013)
+
+Run every command from the repository root, in this order:
+
+```sh
+npm ci --ignore-scripts
+npm run build
+node apps/chess/build.mjs dist/chess
+```
+
+- `npm run build` runs `tsc -p tsconfig.json`, compiling `src/**/*.ts`
+  (including `src/chess/**`) to `dist/src/**`. It must run before packaging;
+  `apps/chess/build.mjs` fails fast with a clear error naming the missing
+  compiled file if it has not.
+- `node apps/chess/build.mjs [outDir]` is the Node-standard-library packaging
+  script. `outDir` is optional and defaults to `<repoRoot>/dist/chess`; the
+  example above passes it explicitly. It copies only the static app files
+  (`index.html`, `app.js`, `app.css`, `board-geometry.mjs`, `pieces.mjs`), the
+  three compiled chess modules (`src/chess/game.js`, `computer.js`,
+  `session.js`), and the three pinned vendor files
+  (`apps/chess/vendor/chess.js`, `chess.d.ts`, `LICENSE.txt`) into `outDir`,
+  preserving the relative directory shape those files already import by. No
+  package is fetched and no bundler runs.
+
+The packaged output (verified locally on 2026-09-17) contains exactly:
+
+```text
+dist/chess/index.html
+dist/chess/app.js
+dist/chess/app.css
+dist/chess/board-geometry.mjs
+dist/chess/pieces.mjs
+dist/chess/src/chess/game.js
+dist/chess/src/chess/computer.js
+dist/chess/src/chess/session.js
+dist/chess/apps/chess/vendor/chess.js
+dist/chess/apps/chess/vendor/chess.d.ts
+dist/chess/apps/chess/vendor/LICENSE.txt
+```
+
+Because every reference inside `dist/chess/` is relative, the whole folder is
+self-contained and relocatable: copy only `dist/chess/` outside the repository
+checkout to serve it. No controller/test file, `package.json`, or
+`node_modules` is present in the copy (`test/chess/build.test.ts` asserts
+this).
+
+**Serving locally with installed tooling only.** No `npx` download is a
+prerequisite. Two options that use tools already present in this repository's
+toolchain:
+
+- Python's standard library, if a Python interpreter is available:
+  `python3 -m http.server 8080 --directory dist/chess` serves the copy at
+  `http://localhost:8080/`.
+- A small Node-standard-library static file server (`node:http`, `node:fs`,
+  `node:path` only, mirroring the packaging script's no-new-dependency
+  approach) works equivalently and was used to verify this documentation.
+
+**Entry URLs actually verified for this task:**
+
+- Root deployment: copy `dist/chess/` to a host's document root and open
+  `http://<host>/` (locally verified via `http://localhost:8901/index.html`
+  returning `200`, with `apps/chess/vendor/chess.js`, `src/chess/session.js`,
+  `app.js`, `board-geometry.mjs`, and `pieces.mjs` all resolving under it).
+- Nested deployment: copy `dist/chess/` to `<docroot>/demo/chess/` and open
+  `http://<host>/demo/chess/` (locally verified via
+  `http://localhost:8902/demo/chess/index.html`,
+  `.../demo/chess/apps/chess/vendor/chess.js`,
+  `.../demo/chess/src/chess/session.js`, and `.../demo/chess/app.js`, all
+  returning `200`).
+
+No relative reference in the packaged output changes between these two
+locations; the same `dist/chess/` copy works unmodified at both.
+
+**Automated coverage of this contract:** `test/chess/build.test.ts` builds the
+package into a fresh temporary directory outside the repository, imports the
+packaged entry and session modules directly (proving real module resolution,
+not just file presence), asserts the pinned vendor files and license are
+present and byte-identical to the source copies, asserts no controller/test
+file leaks into the output, and separately builds into a nested directory to
+simulate `/demo/chess/` hosting. Run it with the existing test command:
+
+```sh
+npm run verify
+```
+
+(`npm run verify` runs `npm run typecheck && npm run test:coverage && npm run
+build`, which discovers and runs `test/chess/**/*.test.ts` alongside all other
+suites under `test/**/*.test.ts`.)
+
+### REQ-015 Human Browser Acceptance Checklist
+
+Browser behavior is not verified by Node tests or the automated pipeline. Each
+item below is **pending** until a human reviewer records browser/device
+versions and a pass/fail result on the pull request before merge.
+
+| # | Scenario | Requirement(s) | Status |
+| - | -------- | --------------- | ------ |
+| 1 | Build and serve the copied output at both root and a nested URL (e.g. `/` and `/demo/chess/`); confirm pieces, styles, and modules render with no console errors, failed requests, or external-origin calls | REQ-013, REQ-015 | Pending human review |
+| 2 | Play locally with pointer and keyboard, including promotion and a checkmate sequence; verify illegal-move rejection, move history, focus visibility, result banner, and Undo | REQ-001–REQ-005, REQ-009, REQ-011 | Pending human review |
+| 3 | Start Computer games as both human White and human Black; verify exactly one legal computer reply per turn, correct side ownership, and that Undo/reset during a queued reply produces no late move | REQ-006–REQ-010 | Pending human review |
+| 4 | Check the documented responsive viewport widths, text zoom, touch input, board flip, and selection/check/last-move visibility without relying on color alone; capture a readable desktop and mobile screenshot | REQ-002, REQ-010, REQ-011 | Pending human review |
+| 5 | Disable networking after the page is ready; confirm play, undo, flip, and starting a new game in both modes work with no further network request | REQ-012 | Pending human review |
+
+Record the tested desktop Chromium version/build and the tested mobile Safari
+or Android Chrome version/device alongside each result. Absent tooling leaves
+these checks explicitly pending; they are never a passed research-stage
+prerequisite, and no automated stage may mark them complete.
+
 ### Key Entities and Success Criteria
 
 - **Game:** authoritative rules instance, legal history, mode, human color,
