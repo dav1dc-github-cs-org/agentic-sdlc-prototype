@@ -7,8 +7,10 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { policySchema } from '../src/contracts.ts';
 import { createLifecycle, startJob } from '../src/lifecycle.ts';
-import { approvePlan, makePlan } from '../src/domain.ts';
-import { collectChanges, prepareContext } from '../src/worker.ts';
+import { approvePlan, digest, makePlan } from '../src/domain.ts';
+import { describeCapabilities } from '../src/changes.ts';
+import { beginAmendment, decideAmendment, routeRecovery } from '../src/recovery.ts';
+import { collectChanges, prepareContext, restoreCheckpoint, writeDraft } from '../src/worker.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
 
@@ -63,13 +65,15 @@ test('prepare entry point loads and validates the registered job before writing 
   state.feedback = 'Repair';
   const job = startJob(state, 'code', '2026-09-08T12:00:00Z');
   writeFileSync(preload, `
-let requests = 0;
 globalThis.fetch = async (input, init) => {
-  requests += 1;
-  if (requests !== 1) throw new Error('Unexpected additional request');
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
   const method = input instanceof Request ? input.method : init?.method || 'GET';
   if (method !== 'GET') throw new Error('Unexpected method: ' + method);
+  const path = decodeURIComponent(url.pathname);
+  if (path.includes('/git/commits/')) return Response.json({ tree: { sha: '${'c'.repeat(40)}' } });
+  if (path.includes('/git/trees/')) return Response.json({ truncated: false, tree: [
+    { path: 'test/existing.test.ts', mode: '100644', type: 'blob', sha: '${'d'.repeat(40)}' }
+  ] });
   if (!decodeURIComponent(url.pathname).endsWith('/repos/owner/repo/contents/issues/123.json')) throw new Error('Unexpected request: ' + url);
   if (url.searchParams.get('ref') !== 'sdlc-state') throw new Error('Missing trusted state ref: ' + url);
   const state = JSON.parse(process.env.MOCK_STATE);
@@ -96,9 +100,17 @@ globalThis.fetch = async (input, init) => {
   try {
     const valid = execute('valid', state);
     assert.equal(valid.result.status, 0, valid.result.stderr);
-    assert.deepEqual(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-context.json'), 'utf8')), { state, policy });
-    assert.equal(readFileSync(valid.output, 'utf8'), `base_sha=${state.baseSha}\n`);
-    assert.throws(() => readFileSync(join(valid.workspace, '.sdlc-output/result.json')), /ENOENT/);
+    const capabilities = describeCapabilities('code', policy, ['test/existing.test.ts']);
+    assert.deepEqual(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-context.json'), 'utf8')), { state, policy, capabilities });
+    assert.equal(readFileSync(valid.output, 'utf8'), `base_sha=${state.baseSha}\nscan_sha=${state.headSha}\n`);
+    assert.equal(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-output/result.json'), 'utf8')).outcome, 'blocked');
+    for (const [path, allowed] of [['test/feature/new.test.ts', true], ['test/existing.test.ts', false], ['src/controller.ts', false]] as const) {
+      const checked = spawnSync(process.execPath, [script, 'check', path], {
+        cwd: valid.workspace, env: { GITHUB_WORKSPACE: valid.workspace }, encoding: 'utf8',
+      });
+      assert.equal(checked.status, allowed ? 0 : 1, checked.stderr);
+      assert.equal(JSON.parse(checked.stdout).allowed, allowed);
+    }
 
     const securityState = structuredClone(state);
     securityState.phase = 'security';
@@ -115,7 +127,7 @@ globalThis.fetch = async (input, init) => {
     const configured = execute('configured', state, { SDLC_AIC_CREDIT_LIMIT: '500' });
     assert.equal(configured.result.status, 0, configured.result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(join(configured.workspace, '.sdlc-context.json'), 'utf8')),
-      { state, policy: { ...policy, maxJobCredits: 500 } });
+      { state, policy: { ...policy, maxJobCredits: 500 }, capabilities });
     const invalidLimit = execute('invalid-limit', state, { SDLC_AIC_CREDIT_LIMIT: '0' });
     assert.notEqual(invalidLimit.result.status, 0);
     assert.match(invalidLimit.result.stderr, /SDLC_AIC_CREDIT_LIMIT/);
@@ -124,7 +136,7 @@ globalThis.fetch = async (input, init) => {
     const legacy = execute('legacy', { ...state, schemaVersion: 1, spend: undefined });
     assert.equal(legacy.result.status, 0, legacy.result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(join(legacy.workspace, '.sdlc-context.json'), 'utf8')), {
-      state: { ...state, spend: { ...state.spend, historyComplete: false } }, policy,
+      state: { ...state, spend: { ...state.spend, historyComplete: false } }, policy, capabilities,
     });
 
     const mismatches: [string, unknown, Record<string, string>][] = [
@@ -236,11 +248,97 @@ test('collector includes edits, additions, and deletions without following symli
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('checkpoint drafts resume only for the same source, plan, workflow, stage, and task', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-checkpoint-'));
+  try {
+    const state = createLifecycle(123, 'requester', 'Feature', 'a'.repeat(40));
+    state.plan = makePlan('Approved plan', 0);
+    state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
+      authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
+    state.phase = 'coding';
+    state.feedback = 'Repair';
+    const job = startJob(state, 'code', '2026-09-08T12:00:00Z');
+    routeRecovery(state, job, { jobId: job.id, inputSha: job.inputSha, outcome: 'blocked', summary: 'Partial implementation',
+      changes: [{ path: 'feature/draft.txt', content: 'draft' }], blocker: { category: 'incomplete_work', scope: 'task', paths: [],
+        constraint: 'More checks needed', diagnostics: [], remedies: ['Continue'] } }, policy, [], '2026-09-08T12:01:00Z');
+    const successor = startJob(state, 'code', '2026-09-08T12:02:00Z');
+    for (const change of [{ inputSha: 'b'.repeat(40) }, { controlSha: 'b'.repeat(40) },
+      { planHash: 'b'.repeat(64) }, { taskId: 'other' }, { stage: 'test' as const }]) {
+      state.job = { ...successor, ...change };
+      assert.equal(restoreCheckpoint(state, directory, policy, []), false);
+    }
+    state.job = successor;
+    assert.equal(restoreCheckpoint(state, directory, policy, []), true);
+    assert.equal(readFileSync(join(directory, 'feature/draft.txt'), 'utf8'), 'draft');
+    assert.equal(state.headSha, 'a'.repeat(40));
+    assert.deepEqual(state.evidence, []);
+    writeDraft(directory, [{ path: 'feature/draft.txt', content: null }]);
+    assert.throws(() => readFileSync(join(directory, 'feature/draft.txt')), /ENOENT/);
+    assert.throws(() => writeDraft(directory, [{ path: '../escape', content: 'unsafe' }]), /Unsafe draft/);
+    symlinkSync(tmpdir(), join(directory, 'escape'));
+    assert.throws(() => writeDraft(directory, [{ path: 'escape/outside.txt', content: 'unsafe' }]), /symlink/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('integration worker emits a deterministic receipt or a bounded blocker without live writes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sdlc-integration-cli-'));
+  try {
+    const state = createLifecycle(123, 'requester', 'Feature', 'a'.repeat(40));
+    state.plan = makePlan('Original plan', 0);
+    state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
+      authorized: true, actor: 'requester', commentId: 1, at: '2026-09-17T12:00:00Z' });
+    beginAmendment(state, { branch: 'main', sha: 'c'.repeat(40) }, state.request, 'Retain source with repaired baseline', true, true);
+    state.amendment!.plan = makePlan('Amended plan', 1);
+    state.amendment!.status = 'awaiting_approval';
+    state.phase = 'awaiting_amendment';
+    decideAmendment(state, 2, 'maintainer', 2, '2026-09-17T12:01:00Z', true,
+      { branch: 'main', sha: 'c'.repeat(40) }, state.request, true);
+    startJob(state, 'integrate', '2026-09-17T12:02:00Z');
+    writeFileSync(join(directory, '.sdlc-context.json'), JSON.stringify({ state, policy }));
+    const preload = join(directory, 'mock-read-only.mjs');
+    writeFileSync(preload, `
+globalThis.fetch = async (input, init) => {
+  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+  const method = input instanceof Request ? input.method : init?.method || 'GET';
+  if (method !== 'GET') throw new Error('Integration attempted a live write');
+  const path = decodeURIComponent(url.pathname);
+  if (path === '/repos/owner/repo') return Response.json({ default_branch: 'main' });
+  if (path.includes('/git/ref/')) return Response.json({ object: { sha: process.env.MOCK_BASELINE } });
+  if (path.includes('/git/commits/')) return Response.json({ tree: { sha: 'd'.repeat(40) } });
+  if (path.includes('/git/trees/')) return Response.json({ truncated: false, tree: [] });
+  throw new Error('Unexpected request');
+};
+`);
+    const output = join(directory, 'output.txt');
+    for (const moved of [false, true]) {
+      writeFileSync(output, '');
+      const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, resolve('src/worker.ts'), 'integrate'], {
+        cwd: directory, encoding: 'utf8', env: { GH_TOKEN: 'fixture', GITHUB_WORKSPACE: directory, GITHUB_REPOSITORY: 'owner/repo',
+          SDLC_BOT_LOGIN: 'sdlc[bot]', GITHUB_OUTPUT: output, MOCK_BASELINE: (moved ? 'b' : 'c').repeat(40),
+          ...(process.env.NODE_V8_COVERAGE ? { NODE_V8_COVERAGE: process.env.NODE_V8_COVERAGE } : {}),
+        },
+      });
+      if (!moved) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(readFileSync(output, 'utf8'), `integration_hash=${digest([])}\n`);
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /baseline moved/);
+        const blocker = JSON.parse(readFileSync(output, 'utf8').slice('blocker='.length));
+        assert.equal(blocker.category, 'approval_conflict');
+        assert.equal(blocker.scope, 'repository');
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('check-result entry point treats skipped, missing, and failed checks as failures', () => {
   const directory = mkdtempSync(join(tmpdir(), 'sdlc-check-result-'));
   const script = resolve('src/worker.ts');
   try {
-    const execute = (stage: string, results: Record<string, { result: string; outputs?: { diagnostics: string } }>) => {
+    const execute = (stage: string, results: Record<string, { result: string; outputs?: {
+      diagnostics?: string; integration_hash?: string; blocker?: string;
+    } }>) => {
       execFileSync(process.execPath, [script, 'checks'], { cwd: directory, env: {
         ...process.env, SDLC_JOB: '123-1', SDLC_SOURCE_SHA: 'a'.repeat(40), SDLC_STAGE: stage,
         SDLC_CHECK_RESULTS: JSON.stringify(results), GITHUB_REPOSITORY: 'owner/repo', GITHUB_RUN_ID: '1',
@@ -271,5 +369,13 @@ test('check-result entry point treats skipped, missing, and failed checks as fai
     } }), execute('scan', good));
     assert.equal(execute('validate', { prepare: { result: 'success' }, tests: { result: 'success' } }).outcome, 'pass');
     assert.equal(execute('validate', {}).outcome, 'changes_requested');
+    const integrated = { prepare: { result: 'success' }, integration: { result: 'success', outputs: { integration_hash: 'a'.repeat(64) } } };
+    assert.equal(execute('integrate', integrated).outcome, 'pass');
+    assert.equal(execute('integrate', { ...integrated, integration: { result: 'success' } }).outcome, 'changes_requested');
+    const blocked = { category: 'approval_conflict', scope: 'repository', paths: [], constraint: 'Conflict',
+      diagnostics: [{ tool: 'policy', message: 'Overlapping file changes' }], remedies: ['Propose a resolution'] };
+    assert.deepEqual(execute('integrate', { ...integrated, integration: {
+      result: 'failure', outputs: { blocker: JSON.stringify(blocked) },
+    } }).blocker, blocked);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

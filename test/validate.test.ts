@@ -102,12 +102,16 @@ test('CodeQL entry point emits JSON-encoded failure diagnostics without passing 
       assert.notEqual(result.status, 0);
       assert.equal(result.error, undefined);
       const lines = readFileSync(output, 'utf8').split('\n');
-      assert.equal(lines.length, 2);
-      assert.equal(lines[1], '');
+      assert.equal(lines.length, input === finding ? 3 : 2);
+      assert.equal(lines[lines.length - 1], '');
       assert.ok(lines[0]!.startsWith('diagnostics='));
       const diagnostics = JSON.parse(lines[0]!.slice('diagnostics='.length));
       assert.match(diagnostics, expected);
       assert.ok(diagnostics.length <= 6000);
+      if (input === finding) {
+        assert.ok(lines[1]!.startsWith('blocker='));
+        assert.equal(JSON.parse(lines[1]!.slice('blocker='.length)).diagnostics[0].tool, 'codeql');
+      }
     }
     const clean = execute({ runs: [{ tool: { driver: {} }, results: [] }] });
     assert.equal(clean.status, 0, clean.stderr);

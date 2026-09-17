@@ -2,13 +2,15 @@ import { Octokit } from '@octokit/rest';
 import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { digest } from './domain.ts';
-import { isProtectedPath, isTestPath, validateChanges } from './changes.ts';
+import { isProtectedPath, isTestPath, mergeSnapshots, validateChanges } from './changes.ts';
+import { assertIntegration } from './recovery.ts';
+import { validateDependencyChanges } from './dependencies.ts';
 import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
 import { assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
 export function workerFile(job: Pick<Job, 'stage'>): string {
-  return ['scan', 'validate'].includes(job.stage) ? 'sdlc-checks.yml' : 'sdlc-agent.lock.yml';
+  return ['scan', 'validate', 'integrate'].includes(job.stage) ? 'sdlc-checks.yml' : 'sdlc-agent.lock.yml';
 }
 
 export function decodeReportArchive(bytes: Uint8Array): Report {
@@ -102,6 +104,108 @@ export class GitHub implements Platform {
     return { branch: repo.default_branch, sha: await this.head(repo.default_branch) };
   }
 
+  async baselineTests(state: Lifecycle): Promise<string[]> {
+    return [...(await this.tree(state.baseSha)).files.keys()].filter(path => isTestPath(path, this.policy)).sort();
+  }
+
+  private async integrationTree(state: Lifecycle) {
+    assertIntegration(state);
+    const amendment = state.amendment!;
+    const baseline = await this.baseline();
+    if (baseline.sha !== amendment.targetSha || baseline.branch !== state.baseBranch) throw new Error('Approved integration baseline moved');
+    const base = await this.tree(amendment.baseSha);
+    const source = await this.tree(amendment.sourceSha);
+    const target = await this.tree(amendment.targetSha);
+    const resolutions = amendment.plan?.policy?.integrationResolutions ?? [];
+    validateChanges(resolutions.map(item => ({ path: item.path, content: item.content })), 'code', this.policy,
+      [...new Set([...base.files.keys(), ...target.files.keys()])].filter(path => isTestPath(path, this.policy)));
+    return mergeSnapshots(base.files, source.files, target.files, resolutions);
+  }
+
+  async integration(state: Lifecycle): Promise<string> {
+    return digest(await this.integrationTree(state));
+  }
+
+  async publishMaintenance(state: Lifecycle, recoveryId: string, hash: string): Promise<number> {
+    const recovery = state.recoveries?.find(item => item.id === recoveryId);
+    if (!recovery?.maintenance || recovery.maintenance.hash !== hash || recovery.status !== 'waiting_maintainer' ||
+      recovery.maintenanceAuthorization?.hash !== hash ||
+        digest({ baseSha: recovery.maintenanceBase, recoveryId, changes: recovery.maintenance.changes }) !== hash) {
+      throw new Error('Maintenance proposal integrity check failed');
+    }
+    const baseline = await this.baseline();
+    if (baseline.sha !== recovery.maintenanceBase || baseline.branch !== state.baseBranch) throw new Error('Maintenance baseline moved; request a fresh proposal');
+    const branch = `agentic/maintenance-${recoveryId}-${hash.slice(0, 12)}`;
+    const message = `SDLC maintenance ${recoveryId} ${hash}`;
+    const parent = await this.tree(baseline.sha);
+    for (const change of recovery.maintenance.changes) {
+      const existing = parent.files.get(change.path);
+      if (!existing || existing.type !== 'blob' || !['100644', '100755'].includes(existing.mode ?? '') ||
+          !recovery.blocker.paths.includes(change.path) || change.content === null) throw new Error('Maintenance path is not a diagnosed regular baseline file');
+    }
+    const { data: tree } = await this.api.git.createTree({ ...this.scope, base_tree: parent.sha,
+      tree: recovery.maintenance.changes.map(change => ({ path: change.path, mode: parent.files.get(change.path)!.mode as '100644',
+        type: 'blob', content: change.content! })) });
+    let head: string;
+    try {
+      head = await this.head(branch);
+      const { data: existing } = await this.api.git.getCommit({ ...this.scope, commit_sha: head });
+      if (existing.message !== message || existing.tree.sha !== tree.sha || existing.parents.length !== 1 ||
+          existing.parents[0]!.sha !== baseline.sha) throw new Error('Maintenance branch changed outside its approved proposal');
+    } catch (error) {
+      if (!missing(error)) throw error;
+      const { data: commit } = await this.api.git.createCommit({ ...this.scope, message, tree: tree.sha, parents: [baseline.sha] });
+      await this.api.git.createRef({ ...this.scope, ref: `refs/heads/${branch}`, sha: commit.sha });
+      head = commit.sha;
+    }
+    const { data: pulls } = await this.api.pulls.list({ ...this.scope, state: 'all', head: `${this.scope.owner}:${branch}`, base: baseline.branch });
+    const existing = pulls.find(pull => pull.user?.login === this.botLogin && pull.head.sha === head);
+    if (existing) return existing.number;
+    const { data: pull } = await this.api.pulls.create({ ...this.scope, head: branch, base: baseline.branch, draft: true,
+      title: `Proposed baseline repair for SDLC #${state.issueNumber}`, body: neutralizeClosingKeywords(
+        `Related lifecycle #${state.issueNumber}. Recovery ${recoveryId}.\n\n${recovery.maintenance.summary}\n\n` +
+        `Explicitly requested draft proposal. Patch hash: ${hash}. No feature approval or gate waiver is granted. ` +
+        'Maintainers must review the diff and required CI, then merge normally. Resume the feature through a scoped amendment.') });
+    return pull.number;
+  }
+
+  async applyIntegration(state: Lifecycle, job: Job, expectedHash: string): Promise<string> {
+    const entries = await this.integrationTree(state);
+    if (digest(entries) !== expectedHash || state.job?.id !== job.id || job.inputSha !== state.headSha) {
+      throw new Error('Integration authority changed');
+    }
+    const parents = [...new Set([job.inputSha, state.amendment!.targetSha])];
+    const message = `SDLC integration ${job.id} ${expectedHash}`;
+    let head: string;
+    try { head = await this.head(state.branch); }
+    catch (error) {
+      if (!missing(error)) throw error;
+      await this.api.git.createRef({ ...this.scope, ref: `refs/heads/${state.branch}`, sha: job.inputSha });
+      head = job.inputSha;
+    }
+    if (head !== job.inputSha) {
+      const { data: commit } = await this.api.git.getCommit({ ...this.scope, commit_sha: head });
+      const existing = [...(await this.tree(head)).files].filter(([, entry]) => entry.type !== 'tree')
+        .map(([path, entry]) => ({ path, sha: entry.sha, mode: entry.mode, type: entry.type }))
+        .sort((first, second) => first.path < second.path ? -1 : first.path > second.path ? 1 : 0);
+      if (commit.message === message && digest(commit.parents.map(parent => parent.sha)) === digest(parents) &&
+          digest(existing) === expectedHash) return head;
+      throw new Error('Integration branch changed outside the registered job');
+    }
+    for (const resolution of state.amendment!.plan?.policy?.integrationResolutions ?? []) if (resolution.content !== null) {
+      const { data: blob } = await this.api.git.createBlob({ ...this.scope,
+        content: Buffer.from(resolution.content).toString('base64'), encoding: 'base64' });
+      if (entries.find(entry => entry.path === resolution.path)?.sha !== blob.sha) throw new Error('Integration resolution blob did not match its approved content');
+    }
+    const { data: tree } = await this.api.git.createTree({ ...this.scope, tree: entries.map(entry => ({
+      path: entry.path, sha: entry.sha, mode: entry.mode as '100644', type: entry.type as 'blob',
+    })) });
+    const { data: commit } = await this.api.git.createCommit({ ...this.scope, message, tree: tree.sha, parents });
+    if (await this.head(state.branch) !== job.inputSha) throw new Error('Integration branch moved before publication');
+    await this.api.git.updateRef({ ...this.scope, ref: `heads/${state.branch}`, sha: commit.sha, force: false });
+    return commit.sha;
+  }
+
   async trustedPathsChanged(from: string, to: string): Promise<boolean> {
     if (from === to) return false;
     const { data } = await this.api.repos.compareCommitsWithBasehead({ ...this.scope, basehead: `${from}...${to}` });
@@ -124,7 +228,7 @@ export class GitHub implements Platform {
       const stored = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
       const state = migrateLifecycle(stored);
       if (state.issueNumber !== number || state.branch !== `agentic/epic-${number}-v${state.plan?.version ?? 1}` &&
-          state.phase !== 'researching' && state.phase !== 'paused' && state.phase !== 'blocked' && state.phase !== 'cancelled') {
+          !['researching', 'preflighting', 'maintaining', 'paused', 'blocked', 'cancelled'].includes(state.phase)) {
         throw new Error('State identity mismatch');
       }
       return { state, version: data.sha, needsMigration: stored.schemaVersion !== state.schemaVersion };
@@ -133,11 +237,13 @@ export class GitHub implements Platform {
 
   async save(record: RecordState): Promise<void> {
     lifecycleSchema.parse(record.state);
+    const content = JSON.stringify(record.state, null, 2) + '\n';
+    if (Buffer.byteLength(content) > 1_000_000) throw new Error('Lifecycle storage budget exceeded');
     await this.ensureStateBranch();
     const { data } = await this.api.repos.createOrUpdateFileContents({
       ...this.scope, branch: this.policy.stateBranch, path: `issues/${record.state.issueNumber}.json`,
       message: `SDLC #${record.state.issueNumber}: ${record.state.phase}`,
-      content: Buffer.from(JSON.stringify(record.state, null, 2) + '\n').toString('base64'),
+      content: Buffer.from(content).toString('base64'),
       sha: record.version,
     });
     if (!data.content?.sha) throw new Error('State write did not return a version');
@@ -251,7 +357,7 @@ export class GitHub implements Platform {
   }
 
   async report(run: Run, job: Job): Promise<Report> {
-    if (['scan', 'validate'].includes(job.stage)) {
+    if (['scan', 'validate', 'integrate'].includes(job.stage)) {
       const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
         ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
       });
@@ -279,7 +385,7 @@ export class GitHub implements Platform {
       const completed = Date.parse(item.completed_at ?? '');
       return total + (completed > started ? completed - started : 0);
     }, 0);
-    if (['scan', 'validate'].includes(job.stage)) return { runnerMs, credits: 0, preempted: false };
+    if (['scan', 'validate', 'integrate'].includes(job.stage)) return { runnerMs, credits: 0, preempted: false };
     const artifacts = await this.api.paginate(this.api.actions.listWorkflowRunArtifacts, {
       ...this.scope, run_id: run.id, per_page: 100,
     });
@@ -300,6 +406,7 @@ export class GitHub implements Platform {
 
   async applyChanges(state: Lifecycle, job: Job, changes: Change[]): Promise<string> {
     validateChanges(changes, job.stage, this.policy);
+    validateDependencyChanges(state, job, changes);
     if (state.headSha !== job.inputSha) throw new Error('Source commit changed during publication');
     const message = `SDLC ${job.id} ${digest(changes)}`;
     let head: string;
@@ -318,6 +425,7 @@ export class GitHub implements Platform {
     const source = await this.tree(job.inputSha);
     const sourceTree = source.files;
     const baselineTree = state.baseSha === job.inputSha ? sourceTree : (await this.tree(state.baseSha)).files;
+    validateChanges(changes, job.stage, this.policy, [...baselineTree.keys()].filter(path => isTestPath(path, this.policy)));
     const caseFolded = new Map<string, string[]>();
     for (const path of sourceTree.keys()) {
       const folded = path.toLowerCase();
@@ -328,7 +436,6 @@ export class GitHub implements Platform {
       if (existing && (existing.type !== 'blob' || !['100644', '100755'].includes(existing.mode ?? ''))) {
         throw new Error('Only regular text files may be modified');
       }
-      if (isTestPath(change.path, this.policy) && baselineTree.has(change.path)) throw new Error('Existing baseline tests are immutable');
       if (change.content === null && !existing) throw new Error('Cannot delete a missing file');
       const segments = change.path.split('/');
       for (let depth = 1; depth <= segments.length; depth += 1) {

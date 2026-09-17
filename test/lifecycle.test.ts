@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { approvePlan, makePlan } from '../src/domain.ts';
-import { lifecycleSchema, type Cost } from '../src/contracts.ts';
+import { lifecycleSchema, policySchema, type Cost } from '../src/contracts.ts';
+import { beginAmendment, resolveBlocker, retainCompletedTasks, routeRecovery, splitTask, validateRequirementCoverage } from '../src/recovery.ts';
 import {
   assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, formatObservedModels, nextTask, observeCost, recordChange, recordSpend,
   recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Task,
 } from '../src/lifecycle.ts';
 
 const at = '2026-09-08T12:00:00Z';
+const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
 const baseSha = 'a'.repeat(40);
 const finalSha = 'b'.repeat(40);
 const tasks: Task[] = [
@@ -23,6 +26,96 @@ function approvedState() {
   state.tasks = structuredClone(tasks);
   return state;
 }
+
+test('structured recovery verifies baseline ownership and stops identical deterministic repairs', () => {
+  const state = approvedState();
+  state.phase = 'coding';
+  const blocker = { category: 'baseline_defect' as const, scope: 'task' as const, paths: ['test/feature/new.test.ts'],
+    constraint: 'Agent incorrectly considers every existing file immutable', diagnostics: [], remedies: ['Repair the assertion'] };
+  assert.equal(resolveBlocker(blocker, policy, ['test/existing.test.ts']).category, 'candidate_defect');
+  assert.equal(resolveBlocker({ ...blocker, paths: ['test/existing.test.ts'] }, policy,
+    ['test/existing.test.ts']).scope, 'repository');
+  assert.equal(resolveBlocker({ ...blocker, paths: ['../escape'] }, policy, []).category, 'unsafe_output');
+  const job = startJob(state, 'code', at);
+  const report = { jobId: job.id, inputSha: baseSha, outcome: 'blocked' as const, summary: 'Repair needed', changes: [], blocker };
+  const recovery = routeRecovery(state, job, report, policy, [], at);
+  assert.equal(recovery.action, 'repair');
+  assert.equal(state.phase, 'coding');
+  assert.equal(state.repairs, 1);
+  const retry = startJob(state, 'code', at);
+  routeRecovery(state, retry, { ...report, jobId: retry.id }, policy, [], at);
+  assert.equal(state.phase, 'blocked');
+  assert.equal(state.recoveries!.length, 1);
+  assert.equal(state.recoveries![0]!.status, 'exhausted');
+  assert.equal(state.repairs, 1);
+  assert.deepEqual(lifecycleSchema.parse(JSON.parse(JSON.stringify(state))), JSON.parse(JSON.stringify(state)));
+});
+
+test('task-local approval conflicts leave unrelated tasks available without authorizing the blocked task', () => {
+  const state = approvedState();
+  state.tasks.push({ id: 'independent', title: 'Independent', description: 'Separate work',
+    acceptance: ['Works'], dependsOn: [], completed: false });
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  routeRecovery(state, job, { jobId: job.id, inputSha: baseSha, outcome: 'blocked', summary: 'Dependency decision required',
+    changes: [], blocker: { category: 'approval_conflict', scope: 'task', paths: ['apps/vendor/library.js'],
+      constraint: 'Approved pin does not permit a patch', diagnostics: [], remedies: ['Approve a bounded patch'] } }, policy, [], at);
+  assert.equal(state.phase, 'coding');
+  assert.equal(nextTask(state)!.id, 'independent');
+  assert.equal(state.tasks.find(task => task.id === 'model')!.blockedBy, job.id);
+  assert.equal(state.approval!.planHash, state.plan!.hash);
+});
+
+test('approved task splits preserve acceptance and invalidate an older execution breakdown', () => {
+  const state = approvedState();
+  state.plan = makePlan('Same outcomes with execution flexibility', 1, {
+    allowTaskSplits: true, vendorSecurityPatches: [], dependencies: [], requirements: [{ id: 'REQ-001', text: 'Works' }],
+  });
+  state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 2,
+    authorized: true, actor: 'requester', commentId: 2, at });
+  state.tasks[1]!.acceptance.push('Invalid inputs are rejected');
+  state.tasks[1]!.requirementIds = ['REQ-001'];
+  assert.doesNotThrow(() => validateRequirementCoverage(state.tasks, state));
+  assert.throws(() => validateRequirementCoverage([], state), /requirement identifiers/);
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  job.runId = 1;
+  assert.throws(() => splitTask(state, job, [
+    { id: 'one', description: 'First step', acceptanceIndexes: [0] },
+    { id: 'two', description: 'Second step', acceptanceIndexes: [0] },
+  ]), /every original/);
+  splitTask(state, job, [
+    { id: 'one', description: 'First step', acceptanceIndexes: [0] },
+    { id: 'two', description: 'Second step', acceptanceIndexes: [1] },
+  ]);
+  assert.throws(() => assertCurrentResult(state, job.id, baseSha, 1), /breakdown changed/);
+  state.job = undefined;
+  assert.equal(startJob(state, 'code', at).stepId, 'one');
+  assert.deepEqual(lifecycleSchema.parse(JSON.parse(JSON.stringify(state))), JSON.parse(JSON.stringify(state)));
+});
+
+test('amendments retain only identical completed tasks whose original requirements and dependencies remain intact', () => {
+  for (const changed of ['none', 'dependency', 'requirements', 'legacy'] as const) {
+    const state = approvedState();
+    const permissions = { allowTaskSplits: true, vendorSecurityPatches: [], dependencies: [],
+      requirements: [{ id: 'REQ-001', text: 'Original requirement' }] };
+    state.plan = makePlan('Original plan', 0, changed === 'legacy' ? undefined : permissions);
+    state.approval!.planHash = state.plan.hash;
+    state.tasks = state.tasks.map((task, index) => ({ ...task, completed: true, issueNumber: 124 + index, requirementIds: ['REQ-001'] }));
+    beginAmendment(state, { branch: 'main', sha: baseSha }, state.request, 'Retain completed work', true, false);
+    state.amendment!.status = 'integrated';
+    state.plan = makePlan('Amended plan', 1, changed === 'requirements' ? {
+      ...permissions, requirements: [{ id: 'REQ-001', text: 'Changed requirement' }],
+    } : permissions);
+    const proposed = state.tasks.map(task => ({ id: task.id, title: task.title, description: task.description,
+      acceptance: [...task.acceptance], dependsOn: [...task.dependsOn], requirementIds: task.requirementIds, completed: false }));
+    if (changed === 'dependency') proposed.find(task => task.id === 'model')!.acceptance.push('New criterion');
+    const retained = retainCompletedTasks(state, proposed);
+    assert.equal(retained.every(task => task.completed), changed === 'none');
+    if (changed !== 'none') assert.equal(retained.some(task => task.completed), false);
+    assert.equal(state.amendment, undefined);
+  }
+});
 
 test('deferred costs preserve original job identity across interruption and serialization', () => {
   const state = approvedState();

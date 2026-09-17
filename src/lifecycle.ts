@@ -1,7 +1,8 @@
-import { digest, type Approval, type Phase, type Plan } from './domain.ts';
-import type { Cost, Report } from './contracts.ts';
+import { digest, planHash, type Approval, type Phase, type Plan } from './domain.ts';
+import type { Amendment, AmendmentDecision, Cost, Recovery, Report } from './contracts.ts';
+import type { DependencyPatch } from './dependencies.ts';
 
-export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review';
+export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review' | 'integrate' | 'maintain';
 
 export interface Task {
   id: string;
@@ -11,6 +12,9 @@ export interface Task {
   dependsOn: string[];
   issueNumber?: number;
   completed: boolean;
+  blockedBy?: string;
+  requirementIds?: string[];
+  steps?: { id: string; description: string; acceptanceIndexes: number[]; completed: boolean }[];
 }
 
 export interface Job {
@@ -26,6 +30,10 @@ export interface Job {
   dispatchedAt?: string;
   runId?: number;
   costedRun?: number;
+  stepId?: string;
+  executionHash?: string;
+  purpose?: 'amendment' | 'baseline_preflight' | 'dependency_preflight' | 'dependency_repair';
+  probeSha?: string;
 }
 
 export interface Spend {
@@ -88,6 +96,17 @@ export interface Lifecycle {
   spend: Spend;
   pendingCosts?: PendingCost[];
   usageHistory?: UsageRecord[];
+  recoveries?: Recovery[];
+  retryAt?: string;
+  dependencyChoices?: Record<string, number>;
+  dependencyPatches?: DependencyPatch[];
+  amendment?: Amendment;
+  amendmentHistory?: AmendmentDecision[];
+  planVersion?: number;
+  preflight?: { kind: 'baseline' | 'dependencies' | 'installed'; sourceSha: string;
+    resumePhase: 'researching' | 'awaiting_approval' | 'awaiting_amendment' | 'decomposing' };
+  vendorRepair?: string;
+  maintenanceRecovery?: string;
   feedback: string;
   resumePhase?: Phase;
   error?: string;
@@ -168,7 +187,7 @@ export function settleCost(state: Lifecycle, pending: PendingCost, maxCredits: n
   if (pending.job.runId !== undefined && state.usageHistory?.some(record => record.job.runId === pending.job.runId)) {
     throw new Error('Usage run already belongs to another job');
   }
-  const persona = ['scan', 'validate'].includes(pending.job.stage) ? null : `sdlc-${pending.job.stage}`;
+  const persona = ['scan', 'validate', 'integrate'].includes(pending.job.stage) ? null : `sdlc-${pending.job.stage}`;
   state.usageHistory ??= [];
   state.usageHistory.push({ job: { ...pending.job }, persona,
     ...(pending.observed ? { observed: structuredClone(pending.observed) } : {}),
@@ -210,15 +229,46 @@ export function validateTasks(tasks: Task[], maximum: number): void {
 }
 
 export function nextTask(state: Lifecycle): Task | undefined {
-  return state.tasks.find(task => !task.completed && task.dependsOn.every(id =>
+  return state.tasks.find(task => !task.completed && !task.blockedBy && task.dependsOn.every(id =>
     state.tasks.some(dependency => dependency.id === id && dependency.completed)));
 }
 
 export function assertApproved(state: Lifecycle): void {
   if (!state.plan || !state.approval || state.plan.hash !== state.approval.planHash ||
-      state.plan.hash !== digest({ version: state.plan.version, body: state.plan.body })) {
+  state.plan.hash !== planHash(state.plan)) {
     throw new Error('An intact approved plan is required');
   }
+}
+
+export function executionHash(state: Lifecycle): string {
+  return digest({ tasks: state.tasks.map(task => ({ id: task.id, description: task.description,
+    acceptance: task.acceptance, dependsOn: task.dependsOn, requirementIds: task.requirementIds,
+    steps: task.steps?.map(step => ({ id: step.id, description: step.description, acceptanceIndexes: step.acceptanceIndexes })) })),
+  dependencyChoices: Object.entries(state.dependencyChoices ?? {}).sort(([first], [second]) => first.localeCompare(second)),
+  amendment: state.amendment ? { version: state.amendment.version, sourceSha: state.amendment.sourceSha,
+    targetSha: state.amendment.targetSha, controlSha: state.amendment.controlSha } : undefined,
+  preflight: state.preflight, vendorRepair: state.vendorRepair, maintenanceRecovery: state.maintenanceRecovery });
+}
+
+export function jobPlan(state: Lifecycle, job: Pick<Job, 'purpose'>): Plan | undefined {
+  return job.purpose === 'dependency_preflight' && state.amendment?.plan ? state.amendment.plan : state.plan;
+}
+
+export function assertJobAuthorization(state: Lifecycle, job: Job): void {
+  if (job.stage === 'maintain') {
+    const recovery = state.recoveries?.find(item => item.id === state.maintenanceRecovery);
+    if (state.phase !== 'maintaining' || recovery?.status !== 'waiting_maintainer' || !recovery.maintenanceBase ||
+        recovery.maintenance) throw new Error('Maintenance requires a registered unresolved baseline defect');
+    return;
+  }
+  if (job.purpose === 'baseline_preflight' || job.purpose === 'dependency_preflight') {
+    const plan = jobPlan(state, job);
+    if (job.stage !== 'scan' || state.phase !== 'preflighting' || !state.preflight ||
+        job.probeSha !== state.preflight.sourceSha || job.purpose === 'dependency_preflight' &&
+        (!plan || plan.hash !== planHash(plan))) throw new Error('Invalid registered preflight');
+    return;
+  }
+  if (job.stage !== 'research') assertApproved(state);
 }
 
 export function startJob(state: Lifecycle, stage: Stage, at: string): Job {
@@ -227,28 +277,41 @@ export function startJob(state: Lifecycle, stage: Stage, at: string): Job {
     research: 'researching', decompose: 'decomposing', code: 'coding',
     scan: 'scanning', security: 'security', test: 'testing', validate: 'validating',
     document: 'documenting', review: 'reviewing',
+    integrate: 'integrating',
+    maintain: 'maintaining',
   };
-  if (state.phase !== phases[stage]) throw new Error('Stage does not match lifecycle phase');
-  if (stage !== 'research') assertApproved(state);
-  const task = stage === 'code' ? nextTask(state) : undefined;
+  if (state.phase !== phases[stage] && !(stage === 'research' && state.phase === 'amending') &&
+      !(stage === 'scan' && state.phase === 'preflighting' && state.preflight)) {
+    throw new Error('Stage does not match lifecycle phase');
+  }
+  if (!['research', 'maintain'].includes(stage) && state.phase !== 'preflighting') assertApproved(state);
+  const task = stage === 'code' && !state.vendorRepair ? nextTask(state) : undefined;
+  const stepId = task?.steps?.find(step => !step.completed)?.id;
   if (stage === 'code' && !task && !state.feedback) throw new Error('No dependency-ready task');
   state.sequence += 1;
+  const purpose = state.phase === 'amending' ? 'amendment' as const :
+    state.phase === 'preflighting' ? (state.preflight!.kind === 'baseline' ? 'baseline_preflight' as const : 'dependency_preflight' as const) :
+      stage === 'code' && state.vendorRepair ? 'dependency_repair' as const : undefined;
   state.job = {
     id: `${state.issueNumber}-${state.sequence}`, stage, inputSha: state.headSha, controlSha: state.controlSha,
-    planHash: state.plan?.hash ?? null, taskId: task?.id ?? null,
+    planHash: jobPlan(state, { purpose })?.hash ?? null, taskId: task?.id ?? null,
+    ...(stepId ? { stepId } : {}), executionHash: executionHash(state),
+    ...(purpose ? { purpose } : {}), ...(state.preflight ? { probeSha: state.preflight.sourceSha } : {}),
     feedback: state.feedback, attempt: 1, createdAt: at,
   };
+  assertJobAuthorization(state, state.job);
   return state.job;
 }
 
 export function assertCurrentResult(state: Lifecycle, jobId: string, sha: string, runId: number): Job {
   const job = state.job;
   if (!job || job.id !== jobId || job.inputSha !== sha || job.runId !== runId ||
-      state.headSha !== sha || job.controlSha !== state.controlSha || job.planHash !== (state.plan?.hash ?? null)) {
+      state.headSha !== sha || job.controlSha !== state.controlSha || job.planHash !== (jobPlan(state, job)?.hash ?? null)) {
     throw new Error('Stale or unrecognized worker result');
   }
+  if (job.executionHash !== undefined && job.executionHash !== executionHash(state)) throw new Error('Execution breakdown changed');
   if (['paused', 'cancelled', 'blocked'].includes(state.phase)) throw new Error('Lifecycle is not running');
-  if (job.stage !== 'research') assertApproved(state);
+  assertJobAuthorization(state, job);
   return job;
 }
 
@@ -276,6 +339,9 @@ export function requestRepair(state: Lifecycle, feedback: string, maximum: numbe
 
 export function assertPublishable(state: Lifecycle): void {
   assertApproved(state);
+  if (state.amendment || state.preflight || state.vendorRepair || state.recoveries?.some(item => item.status !== 'resolved')) {
+    throw new Error('Unresolved recovery prevents publication');
+  }
   if (state.phase !== 'publishing' || state.job || !state.tasks.length ||
       state.tasks.some(task => !task.completed) || state.headSha === state.baseSha) {
     throw new Error('Lifecycle is not ready for publication');

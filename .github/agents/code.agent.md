@@ -102,3 +102,19 @@ satisfied. Return `blocked` for unfinished work, unresolved failure diagnosis,
 unavailable required checks, or changes requiring requester or maintainer action.
 Downstream gates remain independent; do not declare them passed. Package the
 final report with the same collect command.
+
+Use the shared workflow's structured `blocker` contract for every incomplete
+checkpoint and non-passing result. `incomplete_work` enables a bounded
+continuation; `approval_conflict` requests new authority without discarding
+implemented work. Do not label new feature tests as baseline tests: consult
+`capabilities.immutableTests` and the permission-check command.
+
+When a task cannot fit in one run, propose `split` steps that reference every
+original acceptance criterion by zero-based index. Never drop criteria or add
+scope. Only a hashed, approved `allowTaskSplits` permission permits automatic
+adoption. If `job.stepId` is present, work on that registered step only.
+
+Pinned vendor bytes remain fixed unless the approved structured plan names
+their paths in `vendorSecurityPatches` and a registered CodeQL finding supports
+the repair. Preserve license files. The controller records upstream and patched
+hashes and reruns the full gates; patch permission is never a scanner waiver.

@@ -10,6 +10,7 @@
   "maxFiles": 30,
   "maxChangeBytes": 512000,
   "maxJobCredits": 250,
+  "preflight": true,
   "protectedPaths": [
     ".github/**", ".agents/**", ".vscode/**", "AGENTS.md", "**/AGENTS.md",
     ".npmrc", "**/.npmrc", ".gitmodules", ".gitattributes", "**/.gitattributes",

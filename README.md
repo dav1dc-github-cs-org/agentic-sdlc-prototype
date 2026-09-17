@@ -1,7 +1,8 @@
 # Agentic SDLC Prototype
 
 A GitHub-native, approval-gated delivery pipeline. Label an issue
-`agentic-SDLC`; agents research it, propose a plan, implement bounded tasks,
+`agentic-SDLC`; the controller preflights the baseline, then agents research it,
+propose a plan and bounded repair permissions, implement tasks,
 assess security, add tests, and review the integrated feature. A deterministic
 controller creates the final PR only after every required gate passes.
 
@@ -13,12 +14,17 @@ projects, not a production-ready guarantee of correct or secure AI output.
 
 ```mermaid
 flowchart TD
-  issue[Trusted issue label] --> research[Research and proposed plan]
-  research --> approval{Requester approval}
-  approval -->|Revision comments| research
-  approval -->|Approve exact version| tasks[Native sub-issues and dependencies]
-  tasks --> coding[Sequential coding jobs]
-  coding --> scans[CodeQL, dependency audit, secret scan]
+  issue[Trusted issue label] --> preflight[Baseline scanner preflight]
+  preflight --> research[Research and proposed plan]
+  research --> dependencies[Preflight declared dependencies when needed]
+  dependencies --> approval{Requester approval}
+  approval -->|Full revision| preflight
+  approval -->|Approve exact version| vendor[Approved vendor repair and rescan when needed]
+  vendor --> tasks[Native sub-issues and dependencies]
+  tasks -->|"Ready tasks remain"| coding[Sequential coding jobs]
+  tasks -->|"All tasks retained complete"| scans[CodeQL, dependency audit, secret scan]
+  coding -->|"More ready tasks or steps"| coding
+  coding -->|"All tasks complete"| scans
   scans --> security[Independent security agent]
   security --> testing[Independent testing agent]
   testing -->|Tests changed| scans
@@ -29,18 +35,40 @@ flowchart TD
   documentation -->|No changes| review[Independent review agent]
   review --> publication[Final PR and advisory review]
   publication --> human[Human review and merge]
-  scans -->|Findings| coding
-  security -->|Findings| coding
-  testing -->|Findings| coding
-  validation -->|Failures| coding
-  documentation -->|Findings| coding
-  review -->|Findings| coding
+  scans -->|Findings| recovery[Classify and bound recovery]
+  security -->|Findings| recovery
+  testing -->|Findings| recovery
+  validation -->|Failures| recovery
+  documentation -->|Findings| recovery
+  review -->|Findings| recovery
+  coding -->|Incomplete work or conflict| recovery
+  preflight -->|Baseline defect| maintenance[Prepare a maintainer repair proposal]
+  recovery -->|"Permitted coding repair"| coding
+  recovery -->|"Permitted retry or continuation"| continuation[Resume the registered stage]
+  recovery -->|"Eligible approval conflict with an approved plan"| amendment[Propose scoped amendment]
+  recovery -->|"No authorized recovery or budget exhausted"| blocked[Wait for a human decision]
+  amendment --> decision{Explicit human approval}
+  decision -->|Approved| integrate[Integrate retained work and invalidate old evidence]
+  decision -->|Rejected| blocked
+  integrate --> tasks
+  recovery -->|Baseline defect| maintenance
+  maintenance --> maintainer[Explicit draft publication and human review]
+  maintainer -->|"Merged, approved plan: request amendment"| amendment
+  maintainer -->|"Merged, no approval or restart intended: request revision"| preflight
 ```
+
+Retry and continuation return to the registered stage: for example, an incomplete
+Security review resumes Security, not coding. Task-local decisions may leave
+unrelated ready work running; the recovery box summarizes these routes rather
+than repeating every stage connection. A scoped amendment requires an existing
+approved plan. Before approval, a repaired baseline needs a full `/sdlc revise`.
 
 The original issue remains the epic. Task issues stay open until the final PR
 merges; the controller's issue status comment records implementation progress.
-A new plan version retires earlier tasks as not planned and starts a new branch,
-preserving the previous branch and state history.
+A full revision starts over from the current default branch. A scoped amendment
+instead retains implemented source, integrates an explicitly approved baseline,
+and retains task completion only when structured requirements and task definitions
+are unchanged. Both paths invalidate old gate evidence and retain cost history.
 
 ## Start Here
 
@@ -100,13 +128,43 @@ planning stops execution until the request is replanned.
 | --- | --- | --- |
 | `/sdlc approve vN` | Requester or writer | Approve the current plan |
 | `/sdlc revise <feedback>` | Requester or writer | Replan; require approval |
+| `/sdlc amend <feedback>` | Requester or writer; writer for trusted-baseline changes | Propose a source-preserving amendment to an already approved plan |
+| `/sdlc approve-amendment vN` | Requester or writer; writer when specified | Approve the exact amendment and integration |
+| `/sdlc reject-amendment vN` | Same required authority | Reject without discarding source |
+| `/sdlc propose-maintenance JOB HASH` | Repository writer | Explicitly publish the exact baseline repair as a draft PR |
 | `/sdlc pause` | Requester or writer | Invalidate active work and pause |
 | `/sdlc resume` | Repository writer | Resume with a new job |
-| `/sdlc retry` | Repository writer | Retry a blocked stage after intervention |
+| `/sdlc retry` | Repository writer | Retry eligible legacy or infrastructure blocks; cannot override a structured decision |
 | `/sdlc cancel` | Requester or writer | Stop the lifecycle permanently |
 
 Closing the issue or removing the intake label also cancels execution. Once the
 feature PR exists, use normal PR review; issue commands no longer restart it.
+
+## Recovery
+
+Structured blockers distinguish temporary failures, candidate defects, incomplete
+work, approval conflicts, baseline defects, and unsafe output. The controller
+verifies path authority, records attempted remedies, and uses bounded backoff,
+targeted repair, checkpoint continuation, or an explicit approval path. Unrelated
+ready tasks can continue after a task-local block, but not a repository-wide
+trust failure. Repeated identical deterministic repairs stop spending budget.
+
+Workers use the same path checker as publication. Their context names the actual
+immutable baseline tests, and `node control/src/worker.ts check <path>...` checks
+proposed paths. Approved task splitting preserves every original acceptance
+criterion; it cannot add scope or evade total job limits.
+
+Newly declared public npm vendor files are hash-verified and scanned before
+implementation. Explicitly approved alternatives and exact security-patch paths
+permit bounded recovery. Original and patched hashes are retained, licenses stay
+unchanged, and the full security gate still must pass. This is not a general
+package manager, scanner waiver, or permission to change protected manifests.
+
+Approval conflicts can automatically produce a scoped amendment proposal, but
+never an approval. Baseline defects produce a separate proposed patch, which
+requires an explicit maintainer hash command before a draft PR is published.
+Human review and merge remain mandatory. See [Recovery](docs/operations.md#recovery)
+for commands, bounds, deployment, and retained-work recovery.
 
 ## Local Development
 
@@ -120,6 +178,8 @@ npm run verify
 
 Verification runs TypeScript checking, tests with coverage enforcement, and a
 build. Tests use local fixtures and mocked GitHub responses, not live writes.
+Ordinary CI also runs `CI / CodeQL` with the same security-extended findings
+policy as SDLC. Local `npm run verify` does not run CodeQL.
 Some negative fixtures deliberately run failing child tests; the outer test
 runner must still finish successfully.
 
@@ -142,6 +202,8 @@ compiler upgrades require deliberate review and validation.
 | --- | --- |
 | [Controller](src/controller.ts) | Approval commands, state transitions, cost reconciliation, retries, publication gates |
 | [Lifecycle model](src/lifecycle.ts) | Approved-plan integrity, commit-bound evidence, pending cost records |
+| [Recovery](src/recovery.ts) | Blocker routing, amendments, permission-bound task splitting and retained work |
+| [Dependencies](src/dependencies.ts) | Pinned artifact preflight, alternatives, integrity and patch provenance |
 | [GitHub adapter](src/github.ts) | Compare-and-swap state, task links, authenticated run discovery, restricted publishing |
 | [Worker](src/worker.ts) | Validate registered jobs and package bounded proposals |
 | [Validation](src/validate.ts) | Actual tests, coverage comparison, scanner-result enforcement |
@@ -168,6 +230,13 @@ of the active job. Existing version-2 records load without it and keep their
 totals unchanged. Older strict readers cannot load records containing this
 extension, so deployment and rollback must retain support for it.
 
+Recovery adds optional version-2 records for blockers, drafts, amendments,
+preflight, dependency choices and patches, and execution-step bindings. Existing
+records load without retroactive permissions or backfill. Deploy all controller,
+worker, policy, profile, and generated workflow changes together after draining
+old runs. Older strict readers cannot read these extensions. No live state or
+repository settings are changed by local implementation or tests.
+
 Workers receive read-only repository credentials. They return reports and text
 changes as artifacts. The separate controller validates paths, sizes, stage
 permissions, regular-file types, baseline tests, and branch history before
@@ -177,8 +246,10 @@ scripts. A replay after a branch write can recover the already-published commit.
 Coding maps acceptance criteria to checks, diagnoses repairs from current
 scanner or test evidence, and verifies the changed consumer entry point with
 approved tooling. Reports distinguish static checks, runtime execution, and
-scanner results. Provisional `blocked` checkpoints preserve incomplete progress
-as untrusted artifacts, not accepted changes or automatic retry state. See
+scanner results. Trusted preparation seeds incomplete coding and Security reports.
+Valid, bounded `incomplete_work` checkpoints can seed a registered successor only
+for the same source, plan, workflow revision, task, and execution step. The draft
+is not published or accepted evidence; the successor must verify it. See
 [Coding and Repair Evidence](docs/operations.md#coding-and-repair-evidence).
 
 Security reviews keep provisional `blocked` checkpoints with reviewed areas,
@@ -256,7 +327,8 @@ issue when the PR merges.
 
 ## Bounds and Limitations
 
-- Six tasks, two automatic repair rounds, two infrastructure attempts, and
+- Six tasks, up to twelve approved execution steps per task, two automatic
+ repair rounds, two attempts per recovery category and task/step, and
  forty total jobs per lifecycle by default. Manual retry does not reset the
  total job budget.
 - Each agent execution has a 30-minute timeout. The per-inference-job AI credit
@@ -270,10 +342,13 @@ issue when the PR merges.
  To adapt the pipeline to an application, review the source/test paths and
  protections in the trusted policy through a human-controlled change.
 - Text changes only, with bounded file count and bytes. No binaries, symlinks,
- submodules, cross-repository tasks, parallel integration, or automatic rebase.
+ submodules, cross-repository tasks, or parallel integration. Scoped amendments
+ use deterministic three-way tree integration. Overlapping application changes
+ need exact maintainer-approved resolutions; protected paths and baseline tests
+ cannot be resolved through that mechanism.
 - Default-branch movement that touches a protected path requires replanning
-  against the new revision. Movement elsewhere is adopted between jobs.
- Oversized or ambiguous work stops for intervention instead of expanding scope.
+  or a maintainer-approved scoped amendment against the new revision. Movement
+ elsewhere is adopted between jobs. Recovery never grants itself new authority.
 - Security scans are full candidate scans. Existing blocking vulnerabilities
  also prevent publication. CodeQL SARIF is retained as an artifact; it is not
  uploaded under the controller workflow's unrelated default-branch SHA.

@@ -3,7 +3,7 @@ import { appendFileSync, globSync, mkdirSync, readFileSync, readdirSync } from '
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { policySchema, type Policy } from './contracts.ts';
+import { policySchema, type Blocker, type Policy } from './contracts.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const percentage = z.number().finite().min(0).max(100);
@@ -11,6 +11,14 @@ const coverageSchema = z.object({ total: z.object({
   lines: z.object({ pct: percentage }), branches: z.object({ pct: percentage }),
 }) });
 export type Coverage = z.infer<typeof coverageSchema>;
+
+export class ScannerFailure extends Error {
+  readonly blocker: Blocker;
+  constructor(message: string, blocker: Blocker) {
+    super(message);
+    this.blocker = blocker;
+  }
+}
 
 export function validateCoverage(baseline: unknown, candidate: unknown, policy: Policy): void {
   const before = coverageSchema.parse(baseline).total;
@@ -53,6 +61,7 @@ export function validateSarif(input: unknown): void {
   })).min(1) }).parse(input);
   let blocking = 0;
   const details: string[] = [];
+  const diagnostics: Blocker['diagnostics'] = [];
   for (const run of sarif.runs) {
     // Query packs declare their rules in tool.extensions, so the driver alone under-reports severity.
     const declared = new Map([run.tool.driver, ...run.tool.extensions]
@@ -73,13 +82,18 @@ export function validateSarif(input: unknown): void {
           const line = location?.region?.startLine;
           details.push(`${identifier} at ${path}${line === undefined ? '' : `:${line}`} ` +
             `(security severity ${Number.isFinite(severity) ? severity : 'unclassified'})`);
+          diagnostics.push({ tool: 'codeql', ruleId: identifier.slice(0, 160), path: path.slice(0, 240),
+            ...(line === undefined ? {} : { line }), message: details[details.length - 1]! });
         }
       }
     }
   }
   if (blocking) {
     const omitted = blocking > details.length ? `\n${blocking - details.length} additional findings omitted.` : '';
-    throw new Error(`CodeQL found ${blocking} blocking or unclassified findings\n${details.join('\n')}${omitted}`);
+    throw new ScannerFailure(`CodeQL found ${blocking} blocking or unclassified findings\n${details.join('\n')}${omitted}`, {
+      category: 'candidate_defect', scope: 'repository', paths: [...new Set(diagnostics.map(item => item.path!))],
+      constraint: 'Required CodeQL findings policy', diagnostics, remedies: ['Repair the identified findings and rerun the same scanner policy'],
+    });
   }
 }
 
@@ -132,6 +146,7 @@ if (import.meta.main) {
       if (process.env.GITHUB_OUTPUT) {
         const diagnostics = error instanceof Error ? error.message.slice(0, 6000) : 'CodeQL validation failed';
         appendFileSync(process.env.GITHUB_OUTPUT, `diagnostics=${JSON.stringify(diagnostics)}\n`);
+        if (error instanceof ScannerFailure) appendFileSync(process.env.GITHUB_OUTPUT, `blocker=${JSON.stringify(error.blocker)}\n`);
       }
       throw error;
     }

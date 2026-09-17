@@ -79,7 +79,7 @@ test('agents use the repository model with an auto fallback for inference and me
 
 test('checks cannot pass by silently skipping a required stage', () => {
   const workflow = read('sdlc-checks.yml');
-  assert.deepEqual(workflow.jobs.result.needs, ['prepare', 'codeql', 'security', 'tests']);
+  assert.deepEqual(workflow.jobs.result.needs, ['prepare', 'codeql', 'security', 'tests', 'integration']);
   assert.match(workflow.jobs.result.if, /always\(\)/);
   assert.equal(workflow.permissions.contents, 'read');
   assert.equal(workflow.jobs.tests.permissions, undefined);
@@ -91,6 +91,25 @@ test('checks cannot pass by silently skipping a required stage', () => {
   assert.equal(gate['continue-on-error'], undefined);
   const result = workflow.jobs.result.steps.find((step: { env?: Record<string, string> }) => step.env?.SDLC_CHECK_RESULTS);
   assert.equal(result.env.SDLC_CHECK_RESULTS, '${{ toJSON(needs) }}');
+});
+
+test('preflight and integration workflows retain read-only credentials and the required scanner policy', () => {
+  const checks = read('sdlc-checks.yml');
+  assert.equal(checks.jobs.prepare.outputs.scan_sha, '${{ steps.context.outputs.scan_sha }}');
+  assert.equal(checks.jobs.codeql.outputs.blocker, '${{ steps.findings.outputs.blocker }}');
+  for (const name of ['codeql', 'security']) {
+    assert.ok(checks.jobs[name].steps.some((step: { run?: string }) => step.run === 'node control/src/worker.ts dependencies'));
+    const source = checks.jobs[name].steps.find((step: { with?: { path?: string } }) => step.with?.path === 'source');
+    assert.equal(source.with.ref, '${{ needs.prepare.outputs.scan_sha }}');
+  }
+  assert.equal(checks.jobs.integration.outputs.integration_hash, '${{ steps.merge.outputs.integration_hash }}');
+  assert.equal(JSON.stringify(checks.jobs.integration).includes('SDLC_APP_PRIVATE_KEY'), false);
+  const ci = read('ci.yml').jobs.codeql;
+  assert.equal(ci.permissions.contents, 'read');
+  assert.equal(ci.steps.find((step: { uses?: string }) => step.uses?.includes('/init@')).with.queries, 'security-extended');
+  const gate = ci.steps.find((step: { run?: string }) => step.run?.includes('validate.ts sarif'));
+  assert.ok(gate);
+  assert.equal(gate['continue-on-error'], undefined);
 });
 
 test('manual workflows pin actions to immutable commits and never persist git credentials', () => {

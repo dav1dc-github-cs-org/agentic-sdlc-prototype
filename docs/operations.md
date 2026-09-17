@@ -71,7 +71,7 @@ lifecycle with no failed run to investigate.
 
 Configure `SDLC_MODEL` under **Settings > Secrets and variables > Actions >
 Variables** with a model identifier supported by the Copilot runtime and enabled
-for your organization. It applies to all seven SDLC agent stages and gh-aw's
+for your organization. It applies to all eight SDLC agent stages and gh-aw's
 threat-detection pass. Changes apply to subsequent workflow runs without editing
 or recompiling workflows; remove the variable or leave it empty to restore `auto`.
 
@@ -318,7 +318,7 @@ Do not require a PR for state updates, and do not require signed commits on
 either ruleset. The isolated root commit carries no signature, so a signing rule
 in the unbypassed ruleset permanently blocks branch creation.
 
-For the default branch, require pull requests, `CI / Verify`, and human review.
+For the default branch, require pull requests, `CI / Verify`, `CI / CodeQL`, and human review.
 Protect automation and policy changes with code-owner or designated maintainer
 review. Do not permit the controller App to bypass these requirements.
 
@@ -341,7 +341,7 @@ gh api -X POST "/repos/$repo/rulesets" --input - <<'JSON'
         "required_review_thread_resolution": false } },
     { "type": "required_status_checks", "parameters": {
         "strict_required_status_checks_policy": true,
-        "required_status_checks": [{ "context": "CI / Verify" }] } }
+        "required_status_checks": [{ "context": "CI / Verify" }, { "context": "CI / CodeQL" }] } }
   ]
 }
 JSON
@@ -393,8 +393,9 @@ Confirm the result with `gh api "/repos/$repo/rulesets"`. On an organization-own
 repository, organization rulesets layer on top of these and repository admins
 cannot bypass them; check the organization's rules for conflicting targets.
 
-Disable automatic merge. The prototype only creates a merge-ready PR; it does
-not decide whether humans should merge it.
+Disable automatic merge. Feature PRs are published only after all required gates;
+separate maintenance draft PRs need an explicit writer command and normal review.
+The prototype does not decide whether humans should merge either kind of PR.
 
 ## 4. Install and Enable
 
@@ -440,10 +441,15 @@ until those GitHub settings exist.
 
 ### Verify before enabling
 
-Scan the baseline with CodeQL and fix what it reports first. CodeQL analyses the
-whole tree and `CI / Verify` does not run it, so any pre-existing finding at
-`security-severity` 7 or above blocks every agent run from the first scan
-onward, and agents cannot clear findings that sit in protected paths.
+Scan the baseline with CodeQL and fix what it reports first. `CI / CodeQL` now
+enforces the same whole-tree security-extended policy as SDLC; `CI / Verify`
+still covers typecheck, tests, and build separately. New lifecycles also preflight
+the baseline before inference. Findings at security severity 7 or above, errors,
+and unclassified findings remain blockers. A protected-file defect can produce
+a maintainer repair proposal, not an automatic feature-stage edit or waiver.
+For existing installations, add `CI / CodeQL` to required checks only after the
+reviewed workflow is deployed and the check has appeared. This is a separate
+maintainer settings action, not performed by the controller or local tests.
 
 Then confirm the configuration reports what you expect:
 
@@ -514,19 +520,21 @@ build; it is not CodeQL execution or proof of browser behavior.
 
 Before expensive investigation and after meaningful progress, the coding agent
 writes a provisional `blocked` report beginning `Coding work incomplete` and
-packages it with `node control/src/worker.ts collect`. Unlike Security, trusted
-preparation does not seed this checkpoint. The existing final upload attempts
-to retain the last packaged result, but runner termination can prevent capture.
-Failed coding checkpoints are artifacts for inspection, not automatically
-included in the controller's Security-only checkpoint excerpts or restored in a
-retry checkout. No partial changes or passing evidence are accepted from them.
-A successful workflow returning `blocked` blocks the lifecycle normally.
+packages it with `node control/src/worker.ts collect`. Trusted preparation seeds
+both coding and Security with an initial incomplete-work blocker. The final
+upload attempts to retain the last packaged result, but runner termination can
+prevent capture. A valid structured `incomplete_work` report from the current
+job can retain a bounded draft for a registered successor. Failed workflows
+still cannot supply accepted results or gate evidence. Source, approved plan,
+trusted workflow revision, task, execution breakdown, and step must all match
+before restoration. The successor inspects and validates the draft afresh.
 
 The summary includes scope and changes, acceptance and evidence, outstanding
 work, and the stop reason and handoff. `pass` requires completed assigned work
 and required coding checks; later independent gates are not self-approved.
-These are prompt-level practices, not new schema-enforced evidence or recovery
-guarantees. Permissions, baseline immutability, budgets, and gates are unchanged.
+The structured recovery contract does not prove semantic completeness, but does
+enforce bounded routing and authority. Workers can query the shared permission
+checker, including the exact immutable baseline test list, before proposing edits.
 
 ## Test Design and Coverage
 
@@ -606,7 +614,8 @@ also receive diagnostic warnings. Diagnostic comments are idempotent by job and
 run, separate from accepted evidence, and remain visible after a retry starts.
 Comment retries cannot double-charge the run. Failed-stage retry budgets,
 human commands, and current-commit acceptance checks remain unchanged. An
-explicit `blocked` checkpoint from a successful workflow blocks the lifecycle.
+explicit legacy `blocked` report still blocks. A structured `incomplete_work`
+checkpoint uses bounded continuation; an approval conflict requests a decision.
 
 For an interrupted review:
 
@@ -674,6 +683,17 @@ and dispatch-attempt fields on retained identities. Version 2 remains unchanged;
 legacy records are not backfilled. All of these fields require upgraded readers
 on the controller and workers, including during rollback.
 
+Recovery adds optional version-2 fields: `recoveries`, `retryAt`, `amendment`,
+`amendmentHistory`, `planVersion`, `preflight`, `vendorRepair`, `maintenanceRecovery`,
+`dependencyChoices`, and `dependencyPatches`. Plans may carry hashed `policy`;
+tasks may carry requirement IDs, block references and execution steps; new jobs
+bind an `executionHash`, optional `stepId`, preflight purpose and probe SHA.
+Old states and report payloads load without these fields. New permissions are
+never inferred from old prose, and new preflight is not backfilled as evidence.
+Older strict readers cannot load the new fields or phases. Drain old runs and
+deploy controller, worker, policy, profiles, Markdown workflow and generated
+lockfile together. Preserve these readers in any rollback.
+
 For an existing installation:
 
 1. Set `SDLC_ENABLED=false`. Wait for running controller and worker jobs to
@@ -687,8 +707,9 @@ For an existing installation:
   let the next scheduled run do so. Do not rerun an old failed workflow revision.
 4. Check that the controller succeeds, records now have `schemaVersion: 2`, and
   affected issue summaries qualify their cost history. If an active lifecycle
-  reports a changed trusted revision, use `/sdlc revise <feedback>` and approve
-  the new plan. Migration does not bypass that existing gate. A lifecycle with
+  reports a changed trusted revision, use a maintainer-requested
+  `/sdlc amend <feedback>` to retain source, or `/sdlc revise <feedback>` to start
+  over, then approve the new proposal. Migration does not bypass that gate. A lifecycle with
   an open feature PR remains managed through PR review.
 
 A failed or conflicting migration write stops that issue's reconciliation before
@@ -716,13 +737,16 @@ be run manually from the Actions tab, optionally for one issue.
   infrastructure failure.
 - A transient failure after a branch write can recover the matching commit.
   Do not manually rewrite the state file to work around a failed run.
-- A failed scanner or test produces repair feedback; a missing or malformed
-  result is an infrastructure failure. Both paths are bounded.
-- A blocked lifecycle needs investigation. Use `/sdlc retry` for the registered
-  stage only after correcting the cause. Do not use GitHub's rerun button on
+- Structured failures are classified using path policy and diagnostic evidence.
+  Legacy repair feedback retains its bounded coding path; missing or malformed
+  results consume infrastructure attempts.
+- Use `/sdlc retry` only for eligible infrastructure or legacy blocks after
+  correcting the cause. Structured approval, maintenance, unsafe-output and
+  exhausted-recovery records reject unchanged retries. Do not use GitHub's rerun button on
   worker jobs: rerun attempts are deliberately excluded from trusted results.
-- If the issue scope, default branch name, or protected paths on the default
-  branch change, use `/sdlc revise ...` and approve the new plan. Movement outside
+- If the default branch name changes, use full `/sdlc revise ...`. For scope or
+  protected-path changes, choose a scoped amendment or full revision and approve
+  the new plan. A trusted-baseline amendment requires a maintainer. Movement outside
   protected paths is adopted as the trusted workflow revision between jobs;
   it does not automatically rebase the candidate branch. Earlier branches remain
   available for inspection.
@@ -738,6 +762,138 @@ Logs and artifacts are retained according to Actions policy; worker evidence
 artifacts request 14-day retention. Durable state and issue/PR summaries retain
 the links, not perpetual copies of expiring artifacts. Adjust retention for
 your audit needs through a reviewed workflow change.
+
+### Structured Recovery
+
+Workers report `blocker.category`, `scope`, affected `paths`, the conflicting
+`constraint`, structured `diagnostics`, and proposed `remedies`. The controller
+does not treat these claims as authorization. It checks baseline ownership and
+protected paths, binds records to the original job and commits, and persists
+attempt fingerprints before another job is dispatched.
+
+| Category | Recovery |
+| --- | --- |
+| `transient` | Bounded retry with an earliest retry time of 30 seconds, then exponential backoff |
+| `candidate_defect` | Targeted coding repair within both repair and attempt budgets |
+| `incomplete_work` | Continue the original registered stage, or execute an explicitly permitted acceptance-preserving coding split |
+| `approval_conflict` | Prepare an amendment only for an already approved plan when no ready work or pending amendment prevents it and the trusted head is current; otherwise wait for a decision |
+| `baseline_defect` | Prepare a separate maintainer patch for the exact diagnosed files |
+| `unsafe_output` | Reject without applying changes or bypassing a gate |
+
+The scheduled reconciler runs every ten minutes, so backoff is an earliest
+retry time, not a promise of a 30-second restart. Artifact and cost retrieval
+retain their existing same-job, timeout-bounded recollection behavior.
+Recovery attempt counts are separate from the global 40-job and two-repair
+budgets, which never reset merely because a worker changes its explanation.
+Identical deterministic repair keys stop early. Stage/task/step fingerprints
+avoid sharing one retry counter between unrelated work. History has at most
+40 recovery records and 40 amendment decisions. Only one current draft is kept,
+limited to 300 KB of serialized changes; lifecycle writes are capped at 1 MB.
+
+A task-local decision or exhausted automatic recovery marks that task unavailable
+and allows another dependency-ready task to run. Its dependents stay unavailable.
+Automatic retries and incomplete-work continuations resume their registered stage,
+not always coding. Repository-wide trust or baseline failures stop feature work.
+No unresolved recovery can satisfy final publication.
+Worker permission queries use `node control/src/worker.ts check <path>...` and
+the same validator as publication. This is a path-policy check, not authorization
+for a new feature or a guarantee the complete patch is publishable.
+
+Baseline-test immutability is separate from protected-path drift. Tests present at
+`state.baseSha` cannot be edited by feature workers, whether or not they match
+`isProtectedPath`. An upstream change to an unprotected baseline test does not
+alone trigger trusted-revision blocking. Adopting that workflow revision between
+jobs does not incorporate the change into the feature or replace its baseline.
+
+### Scoped Amendments
+
+Use a new standalone `/sdlc amend <specific changed constraint and remedy>`
+comment only when a plan is already approved. Before the first approval, use
+`/sdlc revise` to change the plan or recheck a repaired baseline. Eligible approval
+conflicts can prepare an amendment automatically after unrelated ready work
+finishes, provided no amendment is already pending and the trusted head is current.
+The controller retains the source commit and task history, snapshots the target
+default-branch commit and issue text, and asks Research for a versioned amendment.
+Research cannot approve it. The displayed plan includes structured requirements,
+repair permissions, dependency declarations, and a hash covering all of them.
+
+Approve with `/sdlc approve-amendment vN`, or reject with
+`/sdlc reject-amendment vN`. The requester or a writer may decide ordinary scope
+changes. A writer is required for a trusted-baseline change, a baseline-repair
+recovery, or an explicit integration resolution. Approval checks the exact
+source, target baseline, workflow revision, issue snapshot, and proposal version.
+A moved baseline or changed issue needs a fresh `/sdlc amend ...`; this replaces
+the stale proposal with a higher version without losing source. Rejection does
+not reset budgets or grant a legacy retry path.
+
+A credential-limited `integrate` job computes a deterministic three-way tree
+merge without executing candidate code. The controller independently recomputes
+its hash and publishes only that tree to a new versioned feature branch without
+force. An identical published commit is recovered after a lost acknowledgement.
+Conflicting edits are not silently chosen. Research may propose at most ten
+`planPolicy.integrationResolutions` with exact base/source/target blob SHAs and
+replacement content. These require maintainer approval and may only resolve
+actual conflicts in unprotected application files. Baseline tests, protected
+paths, symlinks and unrelated edits are rejected. The entire plan-policy payload
+is bounded to 16 KB, so larger conflicts require separate maintainer work.
+
+After integration, decomposition revalidates the task graph and requirement-ID
+coverage. Completed tasks survive only when the structured requirements and
+their task definitions match exactly and their dependencies remain completed.
+Legacy plans without structured requirements retain code but revalidate task
+completion through new jobs. If every task is retained complete, decomposition
+proceeds directly to scanning without another coding job. Every required final
+gate runs on the new commit;
+preflight, old passing evidence, and a successful integration are not substitutes.
+
+### Dependency Preflight
+
+`policy.preflight` is enabled in this repository. New intake and full revisions
+scan the current baseline before research. Newly declared vendored dependencies
+are staged in disposable scanner workspaces before feature implementation.
+Only exact public npm package versions and `package/` archive members are
+supported. Each file has an approved path, SHA-256 and runtime/types/license
+role. Package scripts are disabled, subprocess credentials are not forwarded,
+compressed input is bounded to 20 MB, individual extracted files to 512 KB, and
+the normal aggregate change budget still applies.
+
+CodeQL and secret scanning inspect the staged bytes with the normal policy.
+The manifest audit still audits the lockfile; it does not pretend to inventory
+vendored files. Up to three explicitly proposed dependency variants may be
+preflighted in order. Human approval binds the alternatives and their pins.
+If all fail and no patch permission was proposed, a new decision is required.
+
+An explicit `vendorSecurityPatches` list can permit fixes only to named pinned
+non-license files with a registered CodeQL finding. Before approval, the controller
+holds the repair at the approval gate. After approval it registers a dependency-only
+repair, records upstream and patched hashes, and requires an installed-byte rescan
+before decomposition. Every later candidate scan verifies the original bytes or
+current-plan patch provenance. Licenses, protected manifests and scanner policy
+remain unchanged. This is bounded public-npm vendoring support, not permission
+to fetch arbitrary URLs, install packages, omit a declaration, or waive findings.
+
+### Baseline Maintenance
+
+The `maintain` agent leaves the feature checkout unchanged and returns proposed
+file replacements separately as `maintenanceChanges`. It cannot execute a modified
+harness or create a PR. The controller displays a patch hash and bounded preview.
+Review the full result artifact, not just a truncated preview, before issuing
+`/sdlc propose-maintenance JOB HASH` as a repository writer.
+
+That exact command durably authorizes only draft publication. The controller
+verifies the baseline, hash, file ownership and regular-file types, then creates
+or reuses `agentic/maintenance-JOB-HASHPREFIX` and its draft PR. It does not modify
+the feature branch, approve reviews, change settings, or merge. Branch and PR
+retries reuse the same identity after lost responses. Maintainers must inspect
+the diff and required CI, then merge through normal rules. Some protected
+workflow changes may exceed the App's permissions and require a direct maintainer
+change instead; the system does not elevate credentials.
+
+After merge, use a maintainer-requested scoped amendment to retain feature work.
+If the defect was found before any approved plan exists, use full `/sdlc revise`
+to recheck the repaired baseline and begin research. Existing issue #28 is not
+automatically resumed by deploying these changes; its current scope and new
+trusted revision still require the appropriate explicit decision.
 
 ### Cost Receipt Failures
 
@@ -816,13 +972,13 @@ receipt never clears an earlier incomplete-history warning. Turning
   with the per-run cap before changing authentication or billing. The compiler
   can report HTTP 403 as authentication failure without setting the
   pre-emption flag. Do not raise limits or repeatedly retry without a diagnosis.
-4. When the cause is resolved under the same approved scope and trusted revision,
+4. For a legacy or eligible infrastructure block, when the cause is resolved under the same approved scope and trusted revision,
   a writer can post a new standalone `/sdlc retry` comment. This resumes the
   stored phase with the same feedback, clears consecutive worker failures, and
   retains job and repair counters. Ordinary comments do not update job feedback,
   and GitHub's worker rerun button does not create an acceptable replacement.
 5. If the fix changes protected controller code or workflows, deploy it through
-  human review, then use `/sdlc revise <specific findings and recovery scope>`
-  and approve the new plan. The old feature branch remains available for
-  inspection, but the new plan starts from the updated default branch. Retry
+  human review, then use a maintainer `/sdlc amend <specific findings and recovery scope>`
+  and approve the exact amendment to retain source. Full `/sdlc revise` remains
+  available when starting over is intended. Retry
   cannot bypass the trusted-revision check or automatically refresh old feedback.

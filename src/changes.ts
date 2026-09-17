@@ -1,5 +1,6 @@
 import { posix } from 'node:path';
-import type { Change, Policy } from './contracts.ts';
+import { createHash } from 'node:crypto';
+import type { Change, IntegrationResolution, Policy } from './contracts.ts';
 import type { Stage } from './lifecycle.ts';
 
 export function isTestPath(path: string, policy: Policy): boolean {
@@ -17,7 +18,75 @@ export function isProtectedPath(path: string, policy: Policy): boolean {
     policy.protectedPaths.some(pattern => posix.matchesGlob(normalized, pattern.toLowerCase()));
 }
 
-export function validateChanges(changes: Change[], stage: Stage, policy: Policy): void {
+export interface Capabilities {
+  stage: Stage;
+  canProposeChanges: boolean;
+  protectedPaths: string[];
+  immutableTests: string[];
+  testPaths: string[];
+  docsPaths: string[];
+  maxFiles: number;
+  maxChangeBytes: number;
+}
+
+export function describeCapabilities(stage: Stage, policy: Policy, baselineTests: readonly string[]): Capabilities {
+  return {
+    stage, canProposeChanges: ['code', 'test', 'document'].includes(stage),
+    protectedPaths: [...new Set(['.github/**', '.sdlc*', '**/AGENTS.md', ...policy.protectedPaths])],
+    immutableTests: [...new Set(baselineTests)].sort(), testPaths: policy.testPaths, docsPaths: policy.docsPaths,
+    maxFiles: policy.maxFiles, maxChangeBytes: policy.maxChangeBytes,
+  };
+}
+
+export function assessChanges(changes: Change[], stage: Stage, policy: Policy, baselineTests: readonly string[]) {
+  try {
+    validateChanges(changes, stage, policy, baselineTests);
+    return { allowed: true as const, reason: 'permitted' as const };
+  } catch (error) {
+    return { allowed: false as const, reason: error instanceof Error ? error.message : 'Changes are not permitted' };
+  }
+}
+
+export interface SnapshotEntry { sha?: string; mode?: string; type?: string }
+
+export function mergeSnapshots(base: Map<string, SnapshotEntry>, source: Map<string, SnapshotEntry>, target: Map<string, SnapshotEntry>,
+  resolutions: IntegrationResolution[] = []) {
+  const result: { path: string; sha: string; mode: string; type: string }[] = [];
+  const used = new Set<string>();
+  const same = (first?: SnapshotEntry, second?: SnapshotEntry) => first?.sha === second?.sha &&
+    first?.mode === second?.mode && first?.type === second?.type;
+  const paths = [...new Set([...base.keys(), ...source.keys(), ...target.keys()])].sort();
+  for (const path of paths) {
+    const leaf = (snapshot: Map<string, SnapshotEntry>) => snapshot.get(path)?.type === 'tree' ? undefined : snapshot.get(path);
+    const before = leaf(base), feature = leaf(source), baseline = leaf(target);
+    let selected: SnapshotEntry | undefined;
+    if (same(feature, before)) selected = baseline;
+    else if (same(baseline, before) || same(feature, baseline)) selected = feature;
+    else {
+      const resolution = resolutions.find(item => item.path === path);
+      if (!resolution) throw new Error(`Integration conflict at ${path}`);
+      if (resolution.baseSha !== (before?.sha ?? null) || resolution.sourceSha !== (feature?.sha ?? null) ||
+          resolution.targetSha !== (baseline?.sha ?? null) || [before, feature, baseline].some(entry => entry &&
+            (entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode ?? '')))) {
+        throw new Error(`Stale or unsupported integration resolution at ${path}`);
+      }
+      used.add(path);
+      if (resolution.content !== null) selected = { mode: feature?.mode ?? baseline?.mode ?? '100644', type: 'blob',
+        sha: createHash('sha1').update(`blob ${Buffer.byteLength(resolution.content)}\0${resolution.content}`).digest('hex') };
+    }
+    if (selected) {
+      if (!selected.sha || !selected.mode || !selected.type) throw new Error('Incomplete integration tree entry');
+      result.push({ path, sha: selected.sha, mode: selected.mode, type: selected.type });
+    }
+  }
+  if (used.size !== resolutions.length) throw new Error('Integration resolutions must target distinct current conflicts');
+  if (result.some(entry => result.some(other => other !== entry && entry.path.startsWith(`${other.path}/`)))) {
+    throw new Error('Integration conflict between a file and directory');
+  }
+  return result;
+}
+
+export function validateChanges(changes: Change[], stage: Stage, policy: Policy, baselineTests: readonly string[] = []): void {
   if (!['code', 'test', 'document'].includes(stage) && changes.length) throw new Error('Read-only stage proposed changes');
   if (changes.length > policy.maxFiles) throw new Error('Changed-file budget exceeded');
   const seen = new Set<string>();
@@ -44,6 +113,7 @@ export function validateChanges(changes: Change[], stage: Stage, policy: Policy)
       prefixes.set(folded, prefix);
     }
     if (isProtectedPath(path, policy)) throw new Error(`Protected file: ${path}`);
+    if (isTestPath(path, policy) && baselineTests.includes(path)) throw new Error('Existing baseline tests are immutable');
     if (stage === 'test' && !isTestPath(path, policy)) throw new Error('Testing agent may only change tests');
     if (stage === 'document' && !isDocsPath(path, policy)) {
       throw new Error('Documentation agent may only change documentation');

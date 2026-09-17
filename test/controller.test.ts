@@ -8,8 +8,9 @@ import { pathToFileURL } from 'node:url';
 import { Controller, RetryablePlatformError, type Comment, type Platform, type RecordState, type Run } from '../src/controller.ts';
 import { costSchema, lifecycleSchema, migrateLifecycle, policySchema, type Change, type Cost, type Intake, type Report } from '../src/contracts.ts';
 import { createLifecycle, type Job, type Lifecycle, type Task } from '../src/lifecycle.ts';
+import { fileDigest } from '../src/dependencies.ts';
 
-const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
+const policy = { ...policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8'))), preflight: false };
 const baseSha = 'a'.repeat(40);
 
 class FakePlatform implements Platform {
@@ -31,12 +32,23 @@ class FakePlatform implements Platform {
   closedTasks = 0;
   retired: number[] = [];
   baselineSha = baseSha;
+  immutableTests: string[] = [];
   trustedChange = false;
   disposition: 'open' | 'closed' | 'merged' = 'open';
   async issue() { return this.input; }
   async comments() { return this.messages; }
   async canWrite(actor: string) { return actor === 'maintainer'; }
   async baseline() { return { branch: 'main', sha: this.baselineSha }; }
+  async baselineTests() { return this.immutableTests; }
+  async integration() { return 'e'.repeat(64); }
+  integrations = 0;
+  maintenancePublished = 0;
+  async publishMaintenance() { this.maintenancePublished += 1; return 127; }
+  async applyIntegration(_state: Lifecycle, _job: Job, expectedHash: string) {
+    assert.equal(expectedHash, 'e'.repeat(64));
+    this.integrations += 1;
+    return 'f'.repeat(40);
+  }
   async trustedPathsChanged(from: string, to: string) { return from !== to && this.trustedChange; }
   // Mirrors GitHub.save/GitHub.load exactly: raw JSON on write, schema-validated on read.
   async load() {
@@ -224,11 +236,349 @@ async function coding() {
   return context;
 }
 
+test('controller routes verified recovery and rejects unchanged retries without granting new authority', async () => {
+  const { platform, controller } = await coding();
+  const blocker = { category: 'baseline_defect' as const, scope: 'task' as const, paths: ['test/feature/new.test.ts'],
+    constraint: 'A new feature test was mistaken for an immutable baseline', diagnostics: [], remedies: ['Repair the new test'] };
+  platform.finish({ outcome: 'blocked', blocker });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.recoveries![0]!.action, 'repair');
+  assert.equal(platform.stored!.state.phase, 'coding');
+  assert.equal(platform.changed, 0);
+  platform.finish({ outcome: 'blocked', blocker });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  const dispatched = platform.dispatched.length;
+  platform.reply('/sdlc retry', 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.dispatched.length, dispatched);
+  assert.match(platform.outputs.get('comment:2')!, /retry cannot change its authority/);
+  assert.equal(platform.stored!.state.recoveries![0]!.attempts, 1);
+});
+
+test('structured transient recovery waits with bounded backoff before dispatching again', async () => {
+  const { platform } = await coding();
+  let now = new Date('2026-09-17T12:00:00Z');
+  const controller = new Controller(platform, policy, () => now);
+  platform.finish({ outcome: 'blocked', blocker: { category: 'transient', scope: 'task', paths: [],
+    constraint: 'Temporary service interruption', diagnostics: [{ tool: 'platform', message: 'Connection reset' }],
+    remedies: ['Retry after backoff'] } });
+  const dispatched = platform.dispatched.length;
+  await controller.tick(123);
+  assert.equal(platform.dispatched.length, dispatched);
+  now = new Date('2026-09-17T12:00:30Z');
+  await controller.tick(123);
+  assert.equal(platform.dispatched.length, dispatched + 1);
+  assert.equal(platform.stored!.state.retryAt, undefined);
+});
+
+test('approved amendments preserve source, require fresh authority, and integrate before revalidation', async () => {
+  const { platform, controller } = await coding();
+  platform.finish({ changes: [{ path: 'src/feature/new.ts', content: 'implemented' }] });
+  await controller.tick(123);
+  const preserved = platform.stored!.state.headSha;
+  const originalBranch = platform.stored!.state.branch;
+  platform.baselineSha = 'b'.repeat(40);
+  platform.trustedChange = true;
+  platform.reply('/sdlc amend Repair the baseline and retain the implemented feature.', 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.headSha, preserved);
+  assert.equal(platform.stored!.state.branch, originalBranch);
+  assert.equal(platform.stored!.state.job!.purpose, 'amendment');
+  platform.finish({ plan: 'Same feature with an approved baseline repair.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+  platform.reply('/sdlc approve-amendment v2');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+  platform.reply('/sdlc approve-amendment v2', 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'integrate');
+  assert.equal(platform.stored!.state.headSha, preserved);
+  platform.finish({ integrationHash: 'e'.repeat(64) });
+  await controller.tick(123);
+  assert.equal(platform.integrations, 1);
+  assert.equal(platform.stored!.state.baseSha, platform.baselineSha);
+  assert.equal(platform.stored!.state.headSha, 'f'.repeat(40));
+  assert.equal(platform.stored!.state.branch, 'agentic/epic-123-v2');
+  assert.equal(platform.stored!.state.job!.stage, 'decompose');
+  assert.deepEqual(platform.stored!.state.evidence, []);
+  await controller.tick(123);
+  assert.equal(platform.integrations, 1);
+});
+
+test('amendment approvals reject a moved baseline and explicit rejection preserves the implementation', async () => {
+  const { platform, controller } = await coding();
+  platform.reply('/sdlc amend Retain the feature with a narrower dependency policy.');
+  await controller.tick(123);
+  platform.finish({ plan: 'A bounded replacement policy.' });
+  await controller.tick(123);
+  const source = platform.stored!.state.headSha;
+  platform.baselineSha = 'b'.repeat(40);
+  platform.reply('/sdlc approve-amendment v2', 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+  assert.equal(platform.integrations, 0);
+  platform.baselineSha = baseSha;
+  platform.reply('/sdlc reject-amendment v2');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.stored!.state.headSha, source);
+  assert.equal(platform.stored!.state.amendmentHistory![0]!.decision, 'rejected');
+});
+
+test('preflight scans the baseline before inference and never supplies candidate gate evidence', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, { ...policy, preflight: true });
+  await controller.tick(123, intake(platform));
+  assert.equal(platform.stored!.state.job!.purpose, 'baseline_preflight');
+  assert.equal(platform.stored!.state.job!.probeSha, baseSha);
+  assert.equal(platform.stored!.state.approval, undefined);
+  platform.finish();
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'research');
+  assert.deepEqual(platform.stored!.state.evidence, []);
+});
+
+test('preflight continuation resolves its blocker and full revision rechecks the new baseline', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, { ...policy, preflight: true });
+  await controller.tick(123, intake(platform));
+  platform.finish({ outcome: 'changes_requested', blocker: { category: 'incomplete_work', scope: 'repository', paths: [],
+    constraint: 'Scanner service unavailable', diagnostics: [{ tool: 'platform', message: 'Scanner could not run' }], remedies: ['Retry'] } }, 'failure');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.purpose, 'baseline_preflight');
+  platform.finish();
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.recoveries![0]!.status, 'resolved');
+  assert.equal(platform.stored!.state.job!.stage, 'research');
+  platform.finish({ plan: 'An initial plan' });
+  await controller.tick(123);
+  platform.reply('/sdlc revise Changed approach.');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.purpose, 'baseline_preflight');
+});
+
+test('failed coding workflows retain bound drafts without accepted results or source publication', async () => {
+  const { platform, controller } = await coding();
+  const failedJob = platform.stored!.state.job!;
+  platform.finish({ outcome: 'blocked', summary: 'Partial draft before timeout', changes: [{ path: 'apps/draft.js', content: 'draft' }],
+    blocker: { category: 'incomplete_work', scope: 'task', paths: [], constraint: 'Time limit', diagnostics: [], remedies: ['Continue'] } }, 'failure');
+  await controller.tick(123);
+  assert.equal(platform.changed, 0);
+  assert.notEqual(platform.stored!.state.job!.id, failedJob.id);
+  assert.equal(platform.stored!.state.headSha, failedJob.inputSha);
+  assert.deepEqual(platform.stored!.state.recoveries![0]!.checkpoint!.changes, [{ path: 'apps/draft.js', content: 'draft' }]);
+  assert.equal(platform.stored!.state.usageHistory!.find(item => item.job.id === failedJob.id)!.acceptedResult, undefined);
+});
+
+test('baseline maintenance proposals require an exact patch hash and explicit maintainer publication', async () => {
+  const { platform, controller } = await coding();
+  platform.immutableTests = ['test/existing.test.ts'];
+  platform.finish({ outcome: 'blocked', blocker: { category: 'candidate_defect', scope: 'repository', paths: platform.immutableTests,
+    constraint: 'Scanner finding in baseline', diagnostics: [{ tool: 'codeql', path: platform.immutableTests[0]!, message: 'Finding' }],
+    remedies: ['Prepare a baseline repair'] } });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'maintain');
+  platform.finish({ maintenanceChanges: [{ path: platform.immutableTests[0]!, content: 'fixed assertion' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.changed, 0);
+  assert.equal(platform.maintenancePublished, 0);
+  const recovery = platform.stored!.state.recoveries![0]!;
+  platform.reply(`/sdlc propose-maintenance ${recovery.id} ${recovery.maintenance!.hash}`);
+  await controller.tick(123);
+  assert.equal(platform.maintenancePublished, 0);
+  platform.reply(`/sdlc propose-maintenance ${recovery.id} ${'f'.repeat(64)}`, 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.maintenancePublished, 0);
+  platform.reply(`/sdlc propose-maintenance ${recovery.id} ${recovery.maintenance!.hash}`, 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.maintenancePublished, 1);
+  await controller.tick(123);
+  assert.equal(platform.maintenancePublished, 1);
+  assert.equal(platform.stored!.state.recoveries![0]!.maintenancePr, 127);
+});
+
+test('dependency preflight can request approved repair but cannot start application code before rescanning', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, { ...policy, preflight: true });
+  await controller.tick(123, intake(platform));
+  platform.finish();
+  await controller.tick(123);
+  const vendorPath = 'apps/vendor/lib.js';
+  platform.finish({ plan: 'Use the pinned dependency and allow security repairs', planPolicy: {
+    allowTaskSplits: false, vendorSecurityPatches: [vendorPath], dependencies: [{ id: 'library', package: 'library', license: 'MIT', variants: [{
+      version: '1.0.0', files: [
+        { path: vendorPath, archivePath: 'package/lib.js', role: 'runtime', sha256: fileDigest('upstream') },
+        { path: 'apps/vendor/LICENSE', archivePath: 'package/LICENSE', role: 'license', sha256: fileDigest('license') },
+      ],
+    }] }],
+  } });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.purpose, 'dependency_preflight');
+  platform.finish({ outcome: 'changes_requested', blocker: { category: 'candidate_defect', scope: 'repository', paths: [vendorPath],
+    constraint: 'CodeQL finding', diagnostics: [{ tool: 'codeql', path: vendorPath, ruleId: 'js/incomplete-sanitization', message: 'Finding' }],
+    remedies: ['Repair after approval'] } }, 'failure');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_approval');
+  assert.equal(platform.stored!.state.job, undefined);
+  platform.reply('/sdlc approve v1');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.purpose, 'dependency_repair');
+  platform.finish({ changes: [{ path: vendorPath, content: 'patched' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.preflight!.kind, 'installed');
+  assert.equal(platform.stored!.state.job!.stage, 'scan');
+  assert.equal(platform.stored!.state.dependencyPatches![0]!.patchedSha256, fileDigest('patched'));
+  platform.finish();
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'decompose');
+  assert.equal(platform.stored!.state.vendorRepair, undefined);
+  assert.deepEqual(platform.stored!.state.evidence, []);
+});
+
+test('stale amendment proposals can be replaced without reusing a version or losing source', async () => {
+  const { platform, controller } = await coding();
+  platform.reply('/sdlc amend First proposed repair.');
+  await controller.tick(123);
+  platform.finish({ plan: 'First proposed amendment.' });
+  await controller.tick(123);
+  const source = platform.stored!.state.headSha;
+  platform.baselineSha = 'b'.repeat(40);
+  platform.trustedChange = true;
+  platform.reply('/sdlc amend Updated baseline with the same retained feature.', 'maintainer');
+  await controller.tick(123);
+  platform.finish({ plan: 'Replacement amendment.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.amendment!.version, 3);
+  assert.equal(platform.stored!.state.amendment!.plan!.version, 3);
+  assert.equal(platform.stored!.state.headSha, source);
+  platform.reply('/sdlc approve-amendment v2', 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+});
+
+test('approval conflicts automatically prepare an amendment but never approve their own remedy', async () => {
+  const { platform, controller } = await coding();
+  const head = platform.stored!.state.headSha;
+  const oldApproval = platform.stored!.state.approval;
+  platform.finish({ outcome: 'blocked', blocker: { category: 'approval_conflict', scope: 'repository',
+    paths: ['apps/vendor/library.js'], constraint: 'The approved dependency pin prevents the scanner fix', diagnostics: [],
+    remedies: ['Ask for an exact vendor security-patch permission'] } });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.purpose, 'amendment');
+  assert.equal(platform.stored!.state.headSha, head);
+  assert.deepEqual(platform.stored!.state.approval, oldApproval);
+  platform.finish({ plan: 'Proposed explicit security patch authority.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+  assert.equal(platform.integrations, 0);
+  assert.deepEqual(platform.stored!.state.approval, oldApproval);
+});
+
+test('malformed recovery splits consume bounded failures instead of repeating collection forever', async () => {
+  const { platform, controller } = await coding();
+  for (let attempt = 0; attempt < policy.maxJobAttempts; attempt += 1) {
+    platform.finish({ outcome: 'blocked', blocker: { category: 'incomplete_work', scope: 'task', paths: [],
+      constraint: 'More work', diagnostics: [], remedies: ['Split'] }, split: [
+      { id: 'one', description: 'First', acceptanceIndexes: [0] }, { id: 'two', description: 'Second', acceptanceIndexes: [0] },
+    ] });
+    await controller.tick(123);
+  }
+  assert.equal(platform.stored!.state.phase, 'blocked');
+  assert.equal(platform.stored!.state.failures, policy.maxJobAttempts);
+});
+
+test('superseding a trusted-baseline amendment cannot remove its maintainer approval requirement', async () => {
+  const { platform, controller } = await coding();
+  platform.baselineSha = 'b'.repeat(40);
+  platform.trustedChange = true;
+  platform.reply('/sdlc amend Adopt the repaired trusted baseline.', 'maintainer');
+  await controller.tick(123);
+  platform.finish({ plan: 'Trusted-baseline amendment.' });
+  await controller.tick(123);
+  platform.reply('/sdlc amend Same baseline with different wording.');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.amendment!.version, 2);
+  assert.equal(platform.stored!.state.amendment!.requiredMaintainer, true);
+  platform.reply('/sdlc approve-amendment v2');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+  platform.reply('/sdlc amend Replace the first proposal explicitly.', 'maintainer');
+  await controller.tick(123);
+  platform.finish({ plan: 'Replacement trusted-baseline amendment.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.amendment!.requiredMaintainer, true);
+  platform.reply('/sdlc revise Start a fresh plan.', 'maintainer');
+  await controller.tick(123);
+  platform.finish({ plan: 'Fresh full-revision plan.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.plan!.version, 4);
+  assert.equal(platform.stored!.state.branch, 'agentic/epic-123-v4');
+});
+
+test('authorized maintenance publication retries after a lost response without a second command', async () => {
+  const { platform, controller } = await coding();
+  platform.immutableTests = ['test/existing.test.ts'];
+  platform.finish({ outcome: 'blocked', blocker: { category: 'baseline_defect', scope: 'repository', paths: platform.immutableTests,
+    constraint: 'Immutable baseline', diagnostics: [], remedies: ['Propose repair'] } });
+  await controller.tick(123);
+  platform.finish({ maintenanceChanges: [{ path: platform.immutableTests[0]!, content: 'fixed' }] });
+  await controller.tick(123);
+  const recovery = platform.stored!.state.recoveries![0]!;
+  platform.reply(`/sdlc propose-maintenance ${recovery.id} ${recovery.maintenance!.hash}`, 'maintainer');
+  let calls = 0;
+  platform.publishMaintenance = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error('Lost publication response');
+    return 127;
+  };
+  await assert.rejects(controller.tick(123), /Lost publication/);
+  assert.equal(platform.stored!.state.recoveries![0]!.maintenanceAuthorization!.hash, recovery.maintenance!.hash);
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.recoveries![0]!.maintenancePr, 127);
+  await controller.tick(123);
+  assert.equal(calls, 2);
+});
+
+test('approved execution splits run each step before marking the original task complete', async () => {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, policy);
+  await controller.tick(123, intake(platform));
+  platform.finish({ plan: 'Implement both accepted outcomes', planPolicy: {
+    allowTaskSplits: true, vendorSecurityPatches: [], dependencies: [],
+  } });
+  await controller.tick(123);
+  platform.reply('/sdlc approve v1');
+  await controller.tick(123);
+  platform.finish({ tasks: [{ id: 'first', title: 'Feature', description: 'Implement feature',
+    acceptance: ['Happy path works', 'Invalid input rejected'], dependsOn: [] }] });
+  await controller.tick(123);
+  platform.finish({ outcome: 'blocked', blocker: { category: 'incomplete_work', scope: 'task', paths: [],
+    constraint: 'Task needs smaller execution steps', diagnostics: [], remedies: ['Split the same acceptance criteria'] }, split: [
+    { id: 'happy-path', description: 'Implement happy path', acceptanceIndexes: [0] },
+    { id: 'invalid-input', description: 'Implement invalid input rejection', acceptanceIndexes: [1] },
+  ] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stepId, 'happy-path');
+  platform.finish({ changes: [{ path: 'apps/feature.js', content: 'happy path' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.tasks[0]!.completed, false);
+  assert.equal(platform.stored!.state.job!.stepId, 'invalid-input');
+  platform.finish({ changes: [{ path: 'apps/feature.js', content: 'both paths' }] });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.tasks[0]!.completed, true);
+  assert.equal(platform.stored!.state.tasks.length, 1);
+  assert.equal(platform.stored!.state.job!.stage, 'scan');
+});
+
 test('legacy waiting and terminal lifecycles are migrated once without restarting work', async () => {
   for (const phase of ['awaiting_approval', 'paused', 'pr_open', 'merged', 'cancelled'] as const) {
     const { platform, controller } = await planned();
     const state = platform.stored!.state;
     delete state.usageHistory;
+    delete state.planVersion;
     state.phase = phase;
     if (phase === 'pr_open') state.prNumber = 126;
     platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
@@ -251,6 +601,7 @@ test('controller persists migration before PR effects and retries a failed state
   const { platform, controller } = await planned();
   const state = platform.stored!.state;
   delete state.usageHistory;
+  delete state.planVersion;
   state.phase = 'pr_open';
   state.prNumber = 126;
   const legacy = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
@@ -274,6 +625,7 @@ test('migrating a legacy plan does not authorize an untrusted approval command',
   const { platform, controller } = await planned();
   const state = platform.stored!.state;
   delete state.usageHistory;
+  delete state.planVersion;
   platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
   const dispatched = platform.dispatched.length;
   platform.reply('/sdlc approve v1', 'stranger');
@@ -291,6 +643,7 @@ test('legacy migration cannot bypass the trusted-revision gate or accept an old 
   const { platform, controller } = await coding();
   const state = platform.stored!.state;
   delete state.usageHistory;
+  delete state.planVersion;
   const job = state.job!;
   platform.raw = JSON.stringify({ ...state, schemaVersion: 1, spend: undefined });
   platform.baselineSha = 'b'.repeat(40);
@@ -1065,7 +1418,7 @@ test('migrated in-flight jobs preserve cost history and charge each run only onc
     platform.reportFailure = new RetryablePlatformError('Artifact not yet available');
     if (measured) await assert.rejects(controller.tick(123), error => error === platform.reportFailure);
     const state = platform.stored!.state;
-    platform.raw = JSON.stringify({ ...state, schemaVersion: 1, usageHistory: undefined,
+    platform.raw = JSON.stringify({ ...state, schemaVersion: 1, usageHistory: undefined, planVersion: undefined,
       spend: measured ? { ...state.spend, historyComplete: undefined } : undefined });
     const expected = measured ? state.spend : {
       runs: 1, runnerMs: 45_000, credits: 33, nearLimit: 0, preempted: 0, historyComplete: false,

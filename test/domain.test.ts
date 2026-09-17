@@ -16,6 +16,17 @@ test('an authorized approval binds to the exact plan hash', () => {
   assert.equal(approvePlan(approvalInput).planHash, approvalInput.plan.hash);
 });
 
+test('approved repair flexibility is hashed independently of object key order', () => {
+  const policy = { allowTaskSplits: true, vendorSecurityPatches: [], dependencies: [] };
+  const plan = makePlan('Keep the accepted requirements', 0, policy);
+  const reordered = makePlan(plan.body, 0, { dependencies: [], vendorSecurityPatches: [], allowTaskSplits: true });
+  assert.equal(plan.hash, reordered.hash);
+  assert.equal(approvePlan({ ...approvalInput, plan }).planHash, plan.hash);
+  assert.throws(() => approvePlan({ ...approvalInput, plan: { ...plan, policy: { ...policy, allowTaskSplits: false } } }), /integrity/);
+  policy.allowTaskSplits = false;
+  assert.equal(plan.policy!.allowTaskSplits, true);
+});
+
 test('an unauthorized requester cannot start implementation', () => {
   assert.throws(() => approvePlan({ ...approvalInput, authorized: false }), /not authorized/);
 });

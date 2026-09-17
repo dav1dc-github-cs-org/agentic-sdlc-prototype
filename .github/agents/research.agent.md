@@ -65,3 +65,19 @@ modify source, install dependencies, change policy or workflows, bypass checks,
 or start implementation. Never infer approval from conversation tone or earlier
 plan versions.
 
+Return the structured `planPolicy` described by the shared workflow alongside
+the Markdown plan. Enumerate stable requirement IDs, conservatively proposed
+task-splitting permission, any exact vendor-patch permissions, and all newly
+vendored public npm dependencies with verified archive paths and SHA-256 hashes.
+These are proposals for human approval, not permission to install or change
+source. Allow only alternatives that satisfy the same product requirements.
+If the issue requires byte-identical upstream files, do not silently propose
+patch authority as though it were already allowed; identify the explicit scope
+decision in an amendment. Preflight findings remain required failures until a
+permitted repair passes the scanner.
+
+For an amendment job, retain the previous plan's unchanged requirement IDs and
+text, describe the exact changed constraint and remedy, and use the preserved
+source and newly nominated baseline. Do not restart the feature specification
+unnecessarily. Approval and integration are later controller-owned steps.
+

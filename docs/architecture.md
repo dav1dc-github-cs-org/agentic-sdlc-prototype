@@ -1,7 +1,7 @@
 # Agentic SDLC Architecture
 
 This document describes the implemented process from an `agentic-SDLC` issue
-through research, human plan approval, task execution, security, testing,
+through baseline and dependency preflight, research, human plan approval, task execution, security, testing,
 independent review, and final PR publication. The controller makes lifecycle
 decisions deterministically; agents propose plans, code, and assessments.
 
@@ -44,16 +44,17 @@ flowchart TD
     subgraph ArchExecution["Separate hosted worker jobs"]
       ArchBudget["Validate and snapshot repository AI credit limit"]
         ArchAgent["Fresh Copilot role worker in sdlc-agent"]
-        ArchChecks["Deterministic scanner and test workflows"]
+        ArchChecks["Scanner, test, and integration jobs without App credentials"]
         ArchInference["Copilot inference service"]
         ArchContext["Repository and allowlisted documentation"]
     end
     subgraph ArchRecords["GitHub records and outputs"]
-        ArchState[("Protected lifecycle, pending costs, and usage history")]
+        ArchState[("Protected lifecycle, recovery, approvals, costs and usage")]
         ArchArtifacts[("Actions result, evidence, and cost artifacts")]
         ArchBranch[("Versioned feature branch")]
         ArchTasks["Native sub-issues and dependencies"]
         ArchPR["Final PR, advisory review, completion check"]
+        ArchMaintenance["Explicitly authorized draft maintenance PR"]
     end
     ArchIssue --> ArchEvents
     ArchEvents -->|"Reconcile current state"| ArchController
@@ -68,8 +69,9 @@ flowchart TD
     ArchAgent -->|"Reports and proposed text changes"| ArchArtifacts
     ArchChecks -->|"Check results and supporting evidence"| ArchArtifacts
     ArchArtifacts -->|"Download and validate"| ArchController
-    ArchController -->|"Publish accepted text changes"| ArchBranch
+    ArchController -->|"Publish accepted changes or approved integration"| ArchBranch
     ArchController -->|"Only after all required gates"| ArchPR
+    ArchController -->|"Exact maintainer patch-hash command only"| ArchMaintenance
     ArchController -->|"Plans and progress"| ArchIssue
 ```
 
@@ -97,8 +99,9 @@ dependencies; unavailable services do not automatically waive a gate.
   access. Only the controller receives the App token used for publishing.
 - **Keep state outside the conversation.** Versioned JSON is authoritative;
   comments are commands, proposed-plan displays, or progress projections.
-- **Publish the PR last.** Intermediate work lives on a feature branch. Agent
-  review precedes PR creation; its native `COMMENT` review is attached afterward.
+- **Publish the feature PR last.** Intermediate work lives on a feature branch.
+  A separate baseline-maintenance draft requires an explicit maintainer command;
+  neither PR is approved or merged by an agent.
 
 The hosted agent runtime uses sandbox containers. Local development and
 documentation rendering do not require Docker. Deterministic check jobs are
@@ -115,11 +118,12 @@ and Architecture Decision in proposed plans. It separates the application's
 baseline from controller tooling, compares product-fit options, recommends
 components and data flow, and independently assesses pipeline support and
 maintainer prerequisites. Unsupported implementation or validation requires a
-`blocked` report with actionable details in `summary`, using the existing
-blocked-result path rather than creating an executable plan with unapproved
-prerequisites. These are agent instructions, not new schema-enforced plan fields;
-human plan review and deterministic path, revision, and validation gates remain
-necessary. The pipeline still targets Node.js/TypeScript.
+structured blocker with actionable diagnostics and remedies rather than an
+executable plan with unapproved prerequisites. Optional structured plan policy
+binds requirement IDs, task-splitting permission, dependency pins and exact
+vendor-patch permissions into the plan hash. These fields constrain authority,
+not the truth of model reasoning. Human review and deterministic validation
+remain necessary. The pipeline still targets Node.js/TypeScript.
 
 <!-- mermaid-checked: safe quoted labels, unique IDs, closed subgraphs -->
 ```mermaid
@@ -128,21 +132,24 @@ flowchart TD
     ProcAuthorize["Labeled-event sender is a human repository writer"]
     ProcIgnore["Ignore unauthorized intake"]
     ProcInitialize["Bind event request snapshot and default-branch revision"]
+    ProcBaseline["preflighting: scan baseline before inference"]
     subgraph ProcPlanning["Research and human approval"]
         ProcResearch["researching: inspect context and propose plan"]
         ProcPlan["Version and hash the accepted plan proposal"]
+        ProcDependencies["Preflight declared dependency artifacts when needed"]
         ProcWait["awaiting_approval: end run and wait"]
         ProcRevise["Retire old tasks and clear approval and evidence"]
         ProcReject["Reject stale or invalid approval"]
     end
     subgraph ProcImplementation["Bounded sequential implementation"]
         ProcDecompose["decomposing: propose tasks and dependencies"]
+        ProcVendor["Approved dependency-only repair and rescan when needed"]
         ProcGraph["Validate task count, IDs, and acyclic graph"]
         ProcLink["Create or reuse sub-issues and dependency links"]
         ProcSelect["Select ready task or repair-only job"]
         ProcCode["coding: implement within the approved plan"]
         ProcApply["Validate and publish any proposed file changes"]
-        ProcProgress["Mark assigned task implemented in state"]
+        ProcProgress["Mark assigned task or execution step implemented"]
     end
     subgraph ProcQuality["Current-commit quality gates"]
         ProcScan["scanning: CodeQL, dependency audit, secrets"]
@@ -156,7 +163,9 @@ flowchart TD
         ProcDocChanges["Documentation agent proposed file changes"]
         ProcReview["reviewing: assess full feature and evidence"]
     end
-    ProcRepair["Record findings and increment repair counter"]
+    ProcRepair["Verify blocker and choose bounded recovery"]
+    ProcContinue["Resume the registered stage within its budget"]
+    ProcDecision["Amendment or maintenance proposal: see Recovery Flow"]
     ProcBlocked["blocked: human intervention required"]
     ProcPublish["publishing: enforce final publication conditions"]
     ProcPR["pr_open: final PR, cost snapshot, review and check"]
@@ -167,14 +176,19 @@ flowchart TD
     ProcIntake --> ProcAuthorize
     ProcAuthorize -->|"No"| ProcIgnore
     ProcAuthorize -->|"Yes"| ProcInitialize
-    ProcInitialize --> ProcResearch --> ProcPlan --> ProcWait
-    ProcWait -->|"Revision command"| ProcRevise --> ProcResearch
+    ProcInitialize --> ProcBaseline -->|"Pass"| ProcResearch --> ProcPlan --> ProcDependencies --> ProcWait
+    ProcBaseline -->|"Finding or incomplete check"| ProcRepair
+    ProcDependencies -->|"No permitted remedy"| ProcRepair
+    ProcWait -->|"Revision command"| ProcRevise --> ProcBaseline
     ProcWait -->|"Invalid approval"| ProcReject --> ProcWait
-    ProcWait -->|"Exact version approved by authorized human"| ProcDecompose
-    ProcDecompose --> ProcGraph --> ProcLink --> ProcSelect
+    ProcWait -->|"Exact version approved by authorized human"| ProcVendor --> ProcDecompose
+    ProcDecompose --> ProcGraph --> ProcLink
+    ProcLink -->|"Ready tasks remain"| ProcSelect
+    ProcLink -->|"All tasks retained complete"| ProcScan
     ProcSelect --> ProcCode --> ProcApply --> ProcProgress
-    ProcProgress -->|"More tasks"| ProcSelect
+    ProcProgress -->|"More ready tasks or steps"| ProcSelect
     ProcProgress -->|"All tasks implemented"| ProcScan
+    ProcProgress -->|"Remaining tasks await a decision"| ProcRepair
     ProcScan -->|"Pass"| ProcSecurity
     ProcSecurity -->|"Pass"| ProcPrepared
     ProcPrepared -->|"No"| ProcTest
@@ -187,14 +201,18 @@ flowchart TD
     ProcDocChanges -->|"Yes"| ProcScan
     ProcDocChanges -->|"No"| ProcReview
     ProcReview -->|"Pass"| ProcPublish
-    ProcScan -->|"Changes requested"| ProcRepair
-    ProcSecurity -->|"Changes requested"| ProcRepair
-    ProcTest -->|"Changes requested"| ProcRepair
-    ProcValidate -->|"Changes requested"| ProcRepair
-    ProcDocument -->|"Changes requested"| ProcRepair
-    ProcReview -->|"Changes requested"| ProcRepair
-    ProcRepair -->|"Automatic repair budget remains"| ProcSelect
-    ProcRepair -->|"Budget exhausted"| ProcBlocked
+    ProcScan -->|"Non-passing report"| ProcRepair
+    ProcSecurity -->|"Non-passing report"| ProcRepair
+    ProcTest -->|"Non-passing report"| ProcRepair
+    ProcValidate -->|"Non-passing report"| ProcRepair
+    ProcDocument -->|"Non-passing report"| ProcRepair
+    ProcReview -->|"Non-passing report"| ProcRepair
+    ProcCode -->|"Structured incomplete work or conflict"| ProcRepair
+    ProcRepair -->|"Permitted coding repair"| ProcSelect
+    ProcRepair -->|"Eligible retry or continuation"| ProcContinue
+    ProcRepair -->|"Task-local wait with unrelated ready work"| ProcSelect
+    ProcRepair -->|"Eligible approval or baseline conflict"| ProcDecision
+    ProcRepair -->|"No authorized recovery within budget"| ProcBlocked
     ProcPublish -->|"Missing prerequisites"| ProcBlocked
     ProcPublish -->|"All prerequisites satisfied"| ProcPR --> ProcHuman
     ProcHuman -->|"Human merges"| ProcMerged
@@ -205,9 +223,11 @@ Important details behind the diagram:
 
 1. A lifecycle is created once per issue. Relabeling or reopening does not
    restart a permanently cancelled lifecycle.
-2. Task selection uses the first incomplete task whose dependencies are all
-   implemented. There is one registered active job per lifecycle, even when
-   multiple tasks are independent.
+2. Task selection uses the first incomplete, unblocked task whose dependencies
+  are all implemented. Approved execution steps preserve its original criteria.
+  There is one registered active job per lifecycle, even when multiple tasks
+  are independent. After an amendment, retaining every completed task skips
+  coding and proceeds directly to scanning; it does not reuse old gate evidence.
 3. The controller records a testing-stage result on the commit containing the
    accepted tests. It then reruns scanning and security, preserving that new
    test-preparation evidence so testing does not loop indefinitely.
@@ -217,7 +237,11 @@ Important details behind the diagram:
    The final PR contains `Closes #<epic-number>`; GitHub handles epic closure
    on merge to its default branch, and reconciliation closes child tasks.
 6. Invalid output, missing artifacts, pauses, and scope drift follow the
-   separate [Recovery Flow](#recovery-flow), not an unconditional success edge.
+  separate [Recovery Flow](#recovery-flow), not an unconditional success edge.
+  `ProcContinue` returns to the registered phase, not necessarily coding:
+  incomplete Security resumes Security, Testing resumes Testing, and so on.
+  Approved splits resume the next registered coding step. Proposal nodes may
+  wait for authority; a task-local wait can leave unrelated ready tasks running.
 7. Pending cost reconciliation is independent of these phases. It may continue
   after cancellation or merge but never authorizes a worker result or new work.
 
@@ -234,15 +258,24 @@ sequenceDiagram
   participant ApControl as "Controller runs"
   participant ApState as "State branch"
   participant ApWorker as "Research worker"
+  participant ApChecks as "Read-only preflight and integration jobs"
 
   ApHuman->>ApIssue: Describe the feature and have a writer apply the label
   ApIssue-)ApControl: Issue event
   ApControl->>ApControl: Verify label-event sender and bind its issue snapshot
-  ApControl->>ApState: Persist researching and registered research job
+  ApControl->>ApState: Persist baseline preflight and registered scan job
+  ApControl-)ApChecks: Scan the bound baseline before inference
+  ApChecks-->>ApControl: Current registered scan result
+  ApControl->>ApState: On success register research
   ApControl-)ApWorker: Dispatch the registered job
   ApWorker-->>ApControl: Artifact and completion event through GitHub
   ApControl->>ApControl: Validate result, version and hash proposed plan
-  ApControl->>ApState: Persist plan and awaiting_approval
+  ApControl->>ApState: Persist proposed plan before any dependency preflight
+    opt Newly declared dependency artifacts
+  ApControl-)ApChecks: Hash-check and scan declared artifacts with required policy
+  ApChecks-->>ApControl: Pass, bounded alternative, or explicit repair decision
+    end
+  ApControl->>ApState: When eligible persist awaiting_approval
   ApControl->>ApIssue: Display plan, hash, and approval command
   Note over ApControl,ApState: Run ends with no runner waiting
 
@@ -254,9 +287,14 @@ sequenceDiagram
     ApControl-)ApWorker: Request cancellation without accepting old results
       end
     ApControl->>ApIssue: Retire superseded task issues
-    ApControl-)ApWorker: Dispatch revised research
+    ApControl-)ApChecks: Recheck the revised baseline
+    ApControl-)ApWorker: After preflight dispatch revised research
     ApWorker-->>ApControl: New plan proposal through artifact and event
     ApControl->>ApState: Persist the next plan version
+      opt Revised plan declares dependency artifacts
+    ApControl-)ApChecks: Preflight declared dependency bytes before approval
+    ApChecks-->>ApControl: Pass or route the failed preflight through recovery
+      end
     ApControl->>ApIssue: Request approval of the new version
     else Human approves the displayed plan
     ApHuman->>ApIssue: New standalone /sdlc approve vN comment
@@ -265,10 +303,38 @@ sequenceDiagram
         alt Approval is valid
       ApControl->>ApState: Bind actor and comment to plan hash
       ApControl->>ApState: Repin the base to the approved revision
-      ApControl->>ApState: Persist decomposing and register next job
+      ApControl->>ApState: Register required dependency repair or decomposition
         else Command is stale or invalid
       ApControl->>ApIssue: Reject command without starting implementation
         end
+    end
+    opt Scoped amendment of an already approved plan
+    ApControl->>ApState: Retain source and tasks and snapshot new scope and baseline
+    ApControl-)ApWorker: Propose exact amendment without approving it
+    ApWorker-->>ApControl: Versioned plan and structured permissions
+    ApControl->>ApState: Persist amendment proposal and required approver
+      opt Amendment declares dependency artifacts
+    ApControl-)ApChecks: Preflight the declared bytes against the nominated baseline
+    ApChecks-->>ApControl: Pass or route the failed preflight through recovery
+      end
+    ApControl->>ApIssue: Request exact amendment approval and required approver
+    ApHuman->>ApIssue: New approve-amendment or reject-amendment vN command
+    ApIssue-)ApControl: New comment event
+    ApControl->>ApControl: Verify version, plan integrity and required human authority
+      alt Exact approval and source, target, workflow and issue bindings match
+    ApControl-)ApChecks: Compute the explicitly approved three-way integration
+    ApChecks-->>ApControl: Deterministic tree hash or unresolved conflict
+        alt Integration succeeds and controller recomputes the same tree
+    ApControl->>ApControl: Publish integration without force to a new feature branch
+    ApControl->>ApState: Retain source with fresh task and gate validation
+        else Conflict or stale integration
+    ApControl->>ApState: Record bounded recovery without applying the integration
+        end
+      else Authorized rejection
+    ApControl->>ApState: Preserve source and block without integration
+      else Invalid or stale command
+    ApControl->>ApIssue: Reject command without authorizing new work
+      end
     end
 ```
 
@@ -287,10 +353,14 @@ worker is dispatched. A revision snapshots the current issue and default branch,
 active job, clears approval and evidence, retires existing tasks as not planned,
 and chooses a new versioned feature branch. Older branches and unsettled cost
 identities are retained; accounting uses their original commit and plan bindings.
-An edited issue requires replanning before execution can continue, as does any
-default-branch movement that touches a protected path. Movement outside those
-paths is adopted between jobs instead of blocking. `/sdlc retry` does not
-authorize changed scope.
+An edited issue requires a full revision, or a scoped amendment when a plan is
+already approved, before execution can continue. The same choices apply to
+protected-path default-branch movement. A trusted-baseline amendment needs a
+maintainer and retains source rather than restarting it. Before the first plan
+approval, use `/sdlc revise` after a baseline repair; `/sdlc amend` is rejected.
+Movement outside protected paths is adopted between jobs instead of blocking,
+without updating the baseline or rebasing the feature. `/sdlc retry` does not
+authorize changed scope. A default-branch rename requires a full revision.
 
 ## Worker Handoff
 
@@ -322,7 +392,7 @@ sequenceDiagram
     HwControl->>HwState: Settle attributed usage once or retain until the fixed deadline
     Note over HwControl,HwState: Accounting never reads or accepts old worker results
     end
-  HwControl->>HwState: Persist job, source SHA, control SHA, and plan hash
+  HwControl->>HwState: Persist job, source, workflow, plan and execution hashes
   HwState-->>HwControl: Updated state-file version
   HwControl->>HwState: Persist dispatch timestamp
   HwControl->>HwActions: workflow_dispatch on trusted default branch
@@ -331,10 +401,14 @@ sequenceDiagram
     end
   HwActions-)HwWorker: Start expected workflow revision
   HwWorker->>HwState: Read registered lifecycle using read-only access
-  HwState-->>HwWorker: Job, approved plan, tasks, and prior evidence
+  HwState-->>HwWorker: Registered job, proposed or approved plan, tasks and evidence
   HwWorker->>HwWorker: Validate and migrate state in memory only
   HwWorker->>HwWorker: Check registered inputs and runnable state
-    opt Security review
+  HwWorker->>HwWorker: Derive capabilities with exact immutable baseline tests
+    opt Matching incomplete draft
+    HwWorker->>HwWorker: Restore only matching source, plan, workflow, task, step and execution hash
+    end
+    opt Security or coding
     HwWorker->>HwWorker: Seed blocked checkpoint and refresh it as review progresses
     end
     opt Coding role guidance
@@ -381,6 +455,15 @@ sequenceDiagram
     HwArtifacts-->>HwControl: Untrusted result JSON
     HwControl->>HwControl: Check schema, current job, plan, source, and policy
         alt Accepted pass result
+          opt Explicitly approved integration stage
+        HwControl->>HwControl: Independently recompute the approved integration tree
+        HwControl->>HwBranch: Publish only the matching tree without force
+        HwControl->>HwState: Invalidate old proof and revalidate retained tasks
+          end
+          opt Maintenance proposal stage
+        HwControl->>HwState: Retain a separate patch proposal and wait for a writer hash command
+        Note over HwControl,HwBranch: Maintenance pass does not publish feature changes or satisfy a gate
+          end
             opt Coding, testing, or documentation stage proposes text changes
         HwControl->>HwBranch: Validate tree and publish without force
         HwBranch-->>HwControl: Accepted commit SHA
@@ -388,24 +471,29 @@ sequenceDiagram
             end
         HwControl->>HwState: Annotate usage with accepted outcome and resulting commit
         HwControl->>HwState: Record stage result and next phase, retaining unresolved costs
-        else Accepted changes_requested result
-        HwControl->>HwState: Store findings and bounded repair transition
-        else Blocked result or invalid output
-        HwControl->>HwState: Block explicitly or count an infrastructure failure
+        else Structured non-passing result
+        HwControl->>HwState: Validate blocker authority and record bounded recovery
+        else Legacy non-passing result or invalid output
+        HwControl->>HwState: Preserve legacy repair or block or count a failure
         end
     else Failed worker workflow
-    HwControl->>HwState: Count failure without accepting checkpoint evidence
+      opt Eligible coding, Security, Testing, Documentation or Review stage
+    HwControl->>HwArtifacts: Read optional current-job incomplete checkpoint
+    HwControl->>HwControl: Check binding, path authority and continuation budget
+      end
+    HwControl->>HwState: Retain valid incomplete draft within budget or count failure
+    Note over HwControl,HwState: Failed runs never supply accepted results or gate evidence
     end
 ```
 
 The adapter selects the expected worker file from the registered stage:
 
-- `research`, `decompose`, `code`, `security`, `test`, `document`, and `review`
+- `research`, `decompose`, `code`, `security`, `test`, `document`, `review`, and `maintain`
   use the [compiled agent workflow](../.github/workflows/sdlc-agent.lock.yml).
-- `scan` and `validate` use the
+- `scan`, `validate`, and `integrate` use the
   [deterministic check workflow](../.github/workflows/sdlc-checks.yml).
 
-All seven agent stages select the inference model at workflow runtime from the
+All eight agent stages select the inference model at workflow runtime from the
 repository variable `SDLC_MODEL`, falling back to `auto` when it is unset or
 empty. The model choice does not change worker permissions or result acceptance.
 The configured selector is distinct from concrete model IDs reported by runtime
@@ -443,11 +531,11 @@ conclusion is `failure`. A failed agent workflow has no equivalent exception.
 The [Coding profile](../.github/agents/code.agent.md) requires acceptance-to-check
 mapping, current diagnostic triage, consumer entry-point checks, and explicit
 verification limits. It instructs the agent to write and collect provisional
-`blocked` progress reports. Unlike Security checkpoints, these are not seeded
-by trusted preparation or excerpted from failed runs by the controller. Uploaded
-coding checkpoints remain untrusted artifacts, not accepted patches or restored
-retry state. This guidance changes neither the report schema nor acceptance
-gates; see [Coding and Repair Evidence](operations.md#coding-and-repair-evidence).
+`blocked` progress reports. Trusted preparation seeds coding and Security reports.
+Validated structured incomplete-work drafts can seed a bounded successor at the
+same exact job context, including split step and execution breakdown. They are
+never automatically published or accepted as evidence. A successful successor
+must revalidate them. See [Coding and Repair Evidence](operations.md#coding-and-repair-evidence).
 
 ## Security and Testing
 
@@ -459,6 +547,7 @@ measured by executing tests, not by accepting a model's estimated percentage.
 flowchart TD
     GatePrepare["Validate dispatch and registered lifecycle"]
     GateStage["Select registered deterministic stage"]
+    GateDependencies["Hash-check installed pins or stage declared preflight bytes"]
     subgraph GateScan["scan stage: two required parallel jobs"]
         GateCodeQL["CodeQL extended security queries"]
         GateSarif["Validate SARIF findings against policy"]
@@ -472,13 +561,16 @@ flowchart TD
         GateCoverage["Compare measured coverage to fixed policy"]
     end
     GateResult["Separate result job checks required job conclusions"]
+    GateIntegration["Read exact three-way trees and approved conflict resolutions"]
     GatePass["Return pass report"]
-    GateFail["Return changes_requested with failed jobs and available CodeQL diagnostics"]
+    GateFail["Return structured blocker with failed jobs and CodeQL diagnostics"]
     GateController["Controller authenticates result and chooses next phase"]
 
     GatePrepare --> GateStage
-    GateStage -->|"scan"| GateCodeQL --> GateSarif
-    GateStage -->|"scan"| GateAudit -->|"Audit succeeds"| GateSecrets
+    GateStage -->|"scan including preflight"| GateDependencies
+    GateDependencies --> GateCodeQL --> GateSarif
+    GateDependencies --> GateAudit -->|"Audit succeeds"| GateSecrets
+    GateDependencies -->|"Integrity or download failure"| GateResult
     GateSarif -->|"Conclusion and any bounded diagnostics"| GateResult
     GateSecrets --> GateResult
     GateAudit -->|"Audit fails; secret step is skipped"| GateResult
@@ -486,15 +578,24 @@ flowchart TD
     GateBaseline --> GateCandidate --> GateCoverage --> GateResult
     GateBaseline -->|"Failure"| GateResult
     GateCandidate -->|"Failure"| GateResult
-    GateResult -->|"Every selected required job succeeded"| GatePass
-    GateResult -->|"A required job failed, skipped, or is absent"| GateFail
+    GateStage -->|"integrate"| GateIntegration --> GateResult
+    GateResult -->|"Required jobs and stage-specific receipt are valid"| GatePass
+    GateResult -->|"Required job or stage-specific receipt is not valid"| GateFail
     GatePass --> GateController
     GateFail --> GateController
 ```
 
 `scan` requires `prepare`, `codeql`, and `security`. `validate` requires
-`prepare` and `tests`; jobs for the other stage are intentionally not required.
+`prepare` and `tests`. `integrate` requires `prepare`, `integration`, and a valid
+tree-hash receipt; unrelated jobs are intentionally not required.
 If preparation fails, the result job cannot produce an accepted report.
+
+Preflight is a registered `scan` with a separate purpose and probe SHA, not a
+final candidate gate. Baseline scans precede research; declared dependency bytes
+are checked before implementation. Alternatives are bounded and explicit patch
+permissions require human approval before any vendor-only repair. The repaired
+installed bytes must pass preflight before feature tasks proceed. Ordinary
+`CI / CodeQL` applies the same findings policy to PRs and default-branch pushes.
 
 The current checks include:
 
@@ -547,9 +648,10 @@ result after checking the registered job; the agent refreshes it through the
 normal collect command as work progresses. The final post-step attempts to
 upload the last packaged result even if inference fails. This is best-effort
 capture, not continuous remote storage; abrupt runner termination can lose it.
-Checkpoints from failed workflows are only diagnostic and cannot create
-Security evidence. A successful workflow returning `blocked` follows the normal
-blocked-result path. There is no new schema-level proof of review completeness.
+Checkpoints from failed workflows are untrusted continuation inputs, never
+Security evidence. A successful workflow returning a structured `incomplete_work`
+blocker can continue within budget. Legacy `blocked` reports still stop normally.
+Neither path is a schema-level proof of review completeness.
 
 ## Recovery Flow
 
@@ -569,14 +671,22 @@ flowchart TD
     RecoveryCancelled["cancelled: no automatic restart"]
     RecoveryFailure["Increment consecutive infrastructure failures"]
     RecoveryRetry["Register replacement job in the same phase"]
-    RecoveryFindings["Clear evidence and increment repair counter"]
+    RecoveryFindings["Classify blocker and fingerprint attempted remedy"]
     RecoveryCode["coding: apply repair feedback"]
+    RecoveryReadyTask["coding: run an unrelated dependency-ready task"]
     RecoveryBlocked["blocked: inspect cause and evidence"]
     RecoveryRevise["Retain unsettled costs, snapshot scope and retire tasks"]
     RecoveryResearch["researching: new plan requires approval"]
     RecoveryAccounting["Reconcile pending costs in every phase"]
     RecoverySettled["Retain attributed usage and settle once without accepting old results"]
     RecoveryPartial["Record observed values and warn of incomplete history"]
+    RecoveryContinue["Resume the registered stage or approved coding step"]
+    RecoveryAmend["amending: retain source and propose exact change"]
+    RecoveryDecision["awaiting_amendment: explicit authorized human decision"]
+    RecoveryIntegrate["integrating: exact tree merge and fresh validation"]
+    RecoveryMaintain["maintaining: propose diagnosed baseline replacements"]
+    RecoveryMaintenancePR["Writer hash command publishes a draft repair PR"]
+    RecoveryPreflight["preflighting: baseline before research"]
 
     RecoveryActive -->|"Pause or cancel request"| RecoveryInvalidate
     RecoveryActive -->|"Issue closed or intake label removed"| RecoveryInvalidate
@@ -591,22 +701,41 @@ flowchart TD
     RecoveryAccounting -->|"Deadline or permanent retrieval error"| RecoveryPartial
     RecoveryAccounting -->|"Unavailable within collection window"| RecoveryAccounting
     RecoveryPaused -->|"Writer resumes"| RecoveryRetry
-    RecoveryActive -->|"Failed worker or invalid result"| RecoveryFailure
+    RecoveryActive -->|"Invalid result or failed worker without usable draft"| RecoveryFailure
+    RecoveryActive -->|"Bound valid incomplete checkpoint"| RecoveryContinue
     RecoveryActive -->|"Cost receipt rejected or retrieval deadline exceeded"| RecoveryFailure
     RecoveryFailure -->|"Failure budget remains"| RecoveryRetry
     RecoveryFailure -->|"Failure budget exhausted"| RecoveryBlocked
     RecoveryRetry --> RecoveryActive
-    RecoveryActive -->|"Accepted repair findings"| RecoveryFindings
-    RecoveryFindings -->|"Automatic repair budget remains"| RecoveryCode
-    RecoveryFindings -->|"Repair budget exhausted"| RecoveryBlocked
+    RecoveryActive -->|"Structured non-passing result"| RecoveryFindings
+    RecoveryFindings -->|"Permitted repair and new remedy within budget"| RecoveryCode
+    RecoveryFindings -->|"Transient failure within budget"| RecoveryRetry
+    RecoveryFindings -->|"Incomplete work within budget"| RecoveryContinue
+    RecoveryContinue -->|"Revalidate draft and original acceptance"| RecoveryActive
+    RecoveryFindings -->|"Task-local wait with unrelated ready work"| RecoveryReadyTask
+    RecoveryReadyTask --> RecoveryActive
+    RecoveryFindings -->|"Eligible approval conflict after ready work finishes"| RecoveryAmend
+    RecoveryFindings -->|"Verified immutable baseline defect"| RecoveryMaintain
+    RecoveryFindings -->|"Unsafe output or exhausted budget"| RecoveryBlocked
+    RecoveryFindings -->|"Decision needed but no eligible automatic proposal"| RecoveryBlocked
+    RecoveryMaintain -->|"Proposal ready but not applied"| RecoveryBlocked
+    RecoveryBlocked -->|"Exact maintainer patch-hash command"| RecoveryMaintenancePR
+    RecoveryMaintenancePR -->|"Reviewed and merged, approved plan: request amendment"| RecoveryAmend
+    RecoveryMaintenancePR -->|"Reviewed and merged, no approval or restart: revise"| RecoveryRevise
+    RecoveryAmend -->|"Proposal and required preflight complete"| RecoveryDecision
+    RecoveryDecision -->|"Exact approval with required authority"| RecoveryIntegrate
+    RecoveryDecision -->|"Reject"| RecoveryBlocked
+    RecoveryIntegrate -->|"Recompute tree and invalidate old proof"| RecoveryActive
+    RecoveryIntegrate -->|"Unresolved overlap"| RecoveryBlocked
     RecoveryCode --> RecoveryActive
-    RecoveryActive -->|"Explicit blocked report or total job limit"| RecoveryBlocked
+    RecoveryActive -->|"Legacy blocked report or total job limit"| RecoveryBlocked
     RecoveryActive -->|"Issue, base branch, or protected paths changed"| RecoveryInvalidate
-    RecoveryBlocked -->|"Writer retries after resolving cause"| RecoveryRetry
+    RecoveryBlocked -->|"Eligible legacy or infrastructure retry only"| RecoveryRetry
+    RecoveryBlocked -->|"Scoped amendment command with an approved plan"| RecoveryAmend
     RecoveryBlocked -->|"Authorized revision command"| RecoveryRevise
     RecoveryPaused -->|"Authorized revision command"| RecoveryRevise
     RecoveryActive -->|"Authorized revision command"| RecoveryRevise
-    RecoveryRevise --> RecoveryResearch --> RecoveryActive
+    RecoveryRevise --> RecoveryPreflight -->|"Pass"| RecoveryResearch --> RecoveryActive
 ```
 
 ### Recovery Rules
@@ -641,12 +770,35 @@ flowchart TD
   once. A permanent retrieval error or still-missing data after the deadline
   records only known values, marks incomplete history, and stops collection.
   These accounting failures do not consume the current worker's failure budget.
-- **Repair findings:** accepted `changes_requested` after decomposition return
+- **Legacy repair findings:** accepted unstructured `changes_requested` after decomposition return
   to coding, with two automatic repair rounds. The same outcome from research
   or decomposition counts as a failed stage instead.
+- **Structured recovery:** verified categories route separately. Automatic retries,
+  repairs, continuations and splits are bounded by fingerprint, stage, task/step,
+  global jobs and repairs. Identical deterministic repairs stop without another
+  inference. Task-local decisions permit unrelated ready tasks; repository trust
+  failures do not. Retry and continuation resume the original registered stage;
+  only coding repairs and approved coding steps route to coding. Invalid recovery
+  payloads consume bounded worker failures.
+- **Amendments:** automatically proposed for eligible approval conflicts, never
+  automatically approved. A prior approved plan is required. Automatic proposals
+  start only when the lifecycle is blocked, no amendment is pending, and the
+  current default-branch head still matches the trusted revision. Human commands
+  bind exact source, baseline, request,
+  plan and workflow. Stale proposals can be replaced with higher versions.
+  Three-way integration preserves disjoint work; actual overlapping application
+  files need exact maintainer-approved blob-bound resolutions. Protected files
+  and baseline tests are outside the resolution path. All final gates rerun.
+- **Baseline maintenance:** a proposal-only role prepares exact diagnosed file
+  replacements. The controller persists a writer's explicit patch-hash command
+  before creating a separate draft PR. A lost response is retried idempotently.
+  Neither feature source nor main is automatically changed by the proposal.
+  After normal review and merge, an already approved feature may use a scoped
+  amendment. Before approval, or when starting over is intended, use full revision.
 - **Manual controls:** requester or writer may pause, revise, or cancel.
-  Only a writer may resume or retry. Retry clears infrastructure failures, not
-  the total-job or repair counters, and cannot bypass unchanged prerequisites.
+  Only a writer may resume or retry. Scoped amendments additionally support
+  source-preserving decisions. Retry clears infrastructure failures, not global
+  budgets, and rejects unresolved structured decisions or exhausted recoveries.
 - **Late output:** interruption retains any unsettled cost identity and clears
   the active job in one state write before requesting worker cancellation.
   Late costs can be collected; late results cannot authorize their own acceptance.
@@ -692,6 +844,8 @@ flowchart LR
         ComponentLifecycle["lifecycle.ts"]
         ComponentContracts["contracts.ts"]
         ComponentChanges["changes.ts"]
+        ComponentRecovery["recovery.ts"]
+        ComponentDependencies["dependencies.ts"]
     end
     subgraph ComponentExecution["Worker processes"]
         ComponentWorker["worker.ts"]
@@ -705,12 +859,18 @@ flowchart LR
     ComponentController -->|"Platform operations"| ComponentGitHub
     ComponentController -->|"Validate results"| ComponentContracts
     ComponentController -->|"Restrict proposed changes"| ComponentChanges
+    ComponentController -->|"Blockers, amendments and bounded recovery"| ComponentRecovery
+    ComponentController -->|"Pinned alternatives and patch authority"| ComponentDependencies
     ComponentGitHub -->|"Validate artifacts and migrate stored state"| ComponentContracts
     ComponentGitHub -->|"Validate writes and compare trusted paths"| ComponentChanges
+    ComponentGitHub -->|"Recheck approved integration authority"| ComponentRecovery
+    ComponentGitHub -->|"Enforce dependency pins before publication"| ComponentDependencies
     ComponentWorker -->|"Read registered lifecycle"| ComponentGitHub
     ComponentWorker -->|"Check approval integrity"| ComponentLifecycle
     ComponentWorker -->|"Validate runtime policy, job inputs and reports"| ComponentContracts
     ComponentWorker -->|"Collect bounded text changes"| ComponentChanges
+    ComponentWorker -->|"Shared permission and draft-path checks"| ComponentChanges
+    ComponentWorker -->|"Isolated pinned artifact preflight"| ComponentDependencies
     ComponentValidate -->|"Read trusted policy"| ComponentContracts
 ```
 
@@ -724,6 +884,8 @@ flowchart LR
 | [Lifecycle](../src/lifecycle.ts) | Domain | Ledger | Jobs, tasks, evidence, cost observations |
 | [Contracts](../src/contracts.ts) | Validation | Schemas | Parse untrusted data |
 | [Changes](../src/changes.ts) | Validation | Policy | Restrict paths and sizes |
+| [Recovery](../src/recovery.ts) | Domain | Rules | Bound remedies, proposals, amendments and task steps |
+| [Dependencies](../src/dependencies.ts) | Validation | Provenance | Stage pinned public npm files and enforce exact patch authority |
 | [GitHub](../src/github.ts) | Effects | Adapter | State and repository writes |
 | [Worker](../src/worker.ts) | Execution | CLI | Prepare and package results |
 | [Validator](../src/validate.ts) | Execution | CLI | Run tests and enforce gates |
@@ -739,6 +901,9 @@ flowchart LR
 | Approval | Human actor and comment bound to an exact plan hash |
 | Task | Bounded work item in the approved plan's dependency graph |
 | Job | One registered attempt to execute a stage against a commit |
+| Recovery | Verified blocker, stage/task/step fingerprint, bounded attempts, optional unaccepted draft or maintainer proposal |
+| Amendment | Retained source and tasks, nominated baseline, exact proposed permissions, required human decision |
+| Dependency patch | Original and patched hashes bound to the current approved plan and accepted publication |
 | Pending cost | Original job identity, fixed expiry, and optional observed measurements; not execution authority |
 | Usage history | Settled job/persona attribution, observed model/token metadata, and any recorded accepted-result commit; not gate evidence |
 | Evidence | Accepted stage summary and run reference for one commit |
@@ -747,7 +912,8 @@ flowchart LR
 State is stored as `issues/<number>.json` on the protected `sdlc-state` branch.
 That branch is initialized with an isolated root commit, separate from feature
 history. The default feature branch pattern is `agentic/epic-<number>-v<version>`;
-the branch is created lazily when the first accepted text change is published.
+the branch is created lazily when an accepted text change or an approved
+amendment integration is published.
 
 ### Schema Migration
 
@@ -780,6 +946,13 @@ Pending and settled records may include controller-accepted result metadata.
 Existing records without these fields load unchanged; no history is inferred
 from aggregate totals. Deployment and rollback must retain the upgraded readers.
 
+Recovery extends version 2 with optional blocker/draft history, backoff,
+amendments, decisions and a monotonic `planVersion`, preflight state, dependency selections and patches,
+maintenance publication intent, task steps, and execution hashes. No permission
+is backfilled from legacy plan prose. New phases and stages require the upgraded
+controller, profiles and workflows together. Recovery history and draft payloads
+are bounded, and state writes over 1 MB are rejected before publication.
+
 The storage adapter returns a transient `needsMigration` flag alongside the
 original file SHA. Only the controller saves the upgrade, before any command,
 PR processing, or terminal-state early return. This includes `pr_open`, `merged`,
@@ -800,7 +973,10 @@ Deploy only after older controller and worker runs are idle, following
 | `controlSha` | Trusted workflow and automation revision |
 | `headSha` | Latest controller-accepted feature commit |
 | `plan.hash` | Immutable plan content and version fingerprint |
+| `plan.policy` | Hashed requirements, dependency pins, bounded repair flexibility and optional exact conflict resolutions |
 | `job.inputSha` | Source commit supplied to a particular worker |
+| `job.executionHash` and `job.stepId` | Bind an exact task breakdown and optional registered split step |
+| `job.probeSha` | Separate immutable baseline used by a registered preflight scan |
 | `job.runId` | Accepted GitHub run for the registered job |
 | `spend` | Cumulative recorded runner time and AI credits |
 | `spend.models` | Optional distinct concrete model IDs observed in settled primary-agent receipts; informational, not a complete model history |
@@ -810,8 +986,9 @@ Deploy only after older controller and worker runs are idle, following
 
 At initialization, approval, and replanning, baseline and controller SHAs are
 captured from the default branch. `baseSha` then remains fixed while the
-candidate head advances. Dispatch inputs carry the issue, job, stage, candidate
-SHA, and controller SHA.
+candidate head advances. An approved amendment updates `baseSha` only after its
+integration succeeds. Dispatch inputs carry the issue, job, stage, candidate SHA,
+and controller SHA.
 
 `controlSha` tracks the default branch rather than pinning one commit for the
 whole lifecycle, because `workflow_dispatch` always runs at the head: a pin left
@@ -819,12 +996,19 @@ behind by unrelated commits would fail every worker's revision gate and stall th
 lifecycle silently. Between registered jobs the controller compares its pinned
 revision with the current head and adopts the head when no protected path
 differs. A protected-path difference means the trusted harness itself moved, so
-the lifecycle is blocked for replanning instead. Anything the comparison cannot
-judge cleanly — a revert, a force push, or a diff at the API's file cap — is
-treated as a protected-path change. The protected set is the one in
-`policy.json`, so the paths agents may not write are exactly the paths whose
-movement invalidates their work.
-The persisted job links those inputs to the approved plan and selected task.
+the lifecycle stops for a full revision or a maintainer-requested scoped amendment.
+Anything the comparison cannot judge cleanly, such as a revert, a force push, or
+a diff at the API's file cap, is treated as a protected-path change.
+
+Trusted-revision detection uses `isProtectedPath`: the protected patterns in
+[policy.json](../.github/sdlc/policy.json) plus the hardcoded automation and
+agent-instruction exclusions in [changes.ts](../src/changes.ts). This is not the
+complete set of agent edit restrictions. Tests present at `baseSha` are separately
+immutable to all feature workers, even when their paths are not protected. A
+default-branch change confined to such a test is not itself protected-path drift;
+adopting its workflow revision does not update `baseSha` or incorporate that edit
+into the feature. A full revision or approved amendment is needed to change the
+feature's baseline. The persisted job links these inputs to the plan and task.
 
 ### Publication Preconditions
 
@@ -835,7 +1019,8 @@ Before creating the final PR, the controller requires:
 3. Every task marked implemented and a head commit different from the baseline.
 4. Accepted `scan`, `security`, `test`, `validate`, `document`, and `review` evidence on the
    exact candidate head SHA.
-5. The working branch still pointing to that reviewed commit.
+5. No unresolved recovery, amendment, preflight or dependency-only repair.
+6. The working branch still pointing to that reviewed commit.
 
 Publication creates or reuses the feature PR, posts the reviewer's report as an
 advisory `COMMENT`, and publishes `SDLC / Complete` on the reviewed SHA. The App
@@ -975,7 +1160,7 @@ required. The custom cost artifact still measures primary-agent inference only.
 Cost receipts represent unavailable usage and stop signals with `null` rather
 than numeric zero or boolean false. Missing, expired, duplicate, or oversized
 agent receipts produce unknown telemetry; malformed receipt content is still
-rejected. Deterministic scan and validation jobs have known zero inference
+rejected. Deterministic scan, validation and integration jobs have known zero inference
 usage. Unknown credits or stop signals remain pending until recovery or expiry.
 Unrecoverable telemetry sets `historyComplete` false; later successful settlement
 never clears an existing incomplete-history flag. Only measured credits with
@@ -1000,6 +1185,11 @@ a gate; being near the cap alone must not invalidate a completed review.
 | Dispatch attempts per job | 2 |
 | Consecutive infrastructure failures before blocking | 2 |
 | Total registered jobs per lifecycle | 40 |
+| Approved execution steps per split task | 2 to 12; original acceptance criteria retained |
+| Automatic attempts per recovery fingerprint | 2; coding repairs also consume the shared repair budget |
+| Recovery records and amendment decisions | Up to 40 of each |
+| Retained draft or maintenance proposal changes | Up to 300,000 serialized bytes each |
+| Recovery transition and persisted state size | 900,000-byte transition check; 1,000,000-byte write limit |
 | Deferred cost collection window | 90 minutes from first deferral |
 | Retained usage history | Up to 100 registered jobs; up to 20 models per receipt |
 | Changed files per proposal | 30 |
@@ -1027,10 +1217,12 @@ controller's repository publishing authority. The CodeQL job has scoped
 Candidate tests run in separate jobs without publishing credentials.
 
 File policy is enforced outside the model: only coding, testing, and documentation
-may propose changes. Testing is limited to `policy.testPaths`; documentation is
-limited to `policy.docsPaths`. Protected automation paths,
+may return feature edits in `report.changes`. Testing is limited to
+`policy.testPaths`; documentation is limited to `policy.docsPaths`. Protected automation paths,
 baseline tests, unsafe paths, case-colliding path segments, symlinks, binary
-data, oversized changes, and conflicting branch history are rejected. Worker role instructions provide
+data, oversized changes, and conflicting branch history are rejected. Maintenance
+uses the separate `maintenanceChanges` proposal field, not feature-edit authority;
+its draft PR requires an explicit writer command. Worker role instructions provide
 behavioral guidance; merely reading a role profile does not create a separate
 operating-system permission boundary between roles.
 

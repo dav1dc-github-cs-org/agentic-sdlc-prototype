@@ -7,8 +7,9 @@ import { strToU8, zipSync } from 'fflate';
 import { GitHub, decodeCostArchive, decodeReportArchive, neutralizeClosingKeywords } from '../src/github.ts';
 import { Controller, RetryablePlatformError } from '../src/controller.ts';
 import { policySchema } from '../src/contracts.ts';
-import { createLifecycle, startJob } from '../src/lifecycle.ts';
+import { createLifecycle, startJob, type Lifecycle } from '../src/lifecycle.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
+import { beginAmendment, decideAmendment, routeRecovery } from '../src/recovery.ts';
 
 const policy = policySchema.parse(JSON.parse(readFileSync('.github/sdlc/policy.json', 'utf8')));
 const baseSha = 'a'.repeat(40);
@@ -48,6 +49,157 @@ function publishable() {
   }));
   return state;
 }
+
+function recoveryRepository(state: Lifecycle) {
+  const targetSha = 'c'.repeat(40);
+  const entry = (path: string, content: string) => ({ path, mode: '100644', type: 'blob',
+    sha: createHash('sha1').update(`blob ${Buffer.byteLength(content)}\0${content}`).digest('hex') });
+  const baselineFiles = [entry('test/existing.test.ts', 'before'), entry('src/feature.ts', 'existing')];
+  const trees = new Map<string, typeof baselineFiles>();
+  const commits = new Map<string, { message: string; tree: { sha: string }; parents: { sha: string }[] }>();
+  for (const [sha, files] of [[baseSha, baselineFiles], [newSha, [...baselineFiles, entry('apps/new.js', 'feature')]],
+    [targetSha, [entry('test/existing.test.ts', 'fixed baseline'), baselineFiles[1]!]]] as const) {
+    const tree = digest(files).slice(0, 40);
+    trees.set(tree, [...files]);
+    commits.set(sha, { message: 'fixture', tree: { sha: tree }, parents: [{ sha: baseSha }] });
+  }
+  const refs = new Map([['heads/main', targetSha]]);
+  const pulls: { number: number; user: { login: string }; head: { sha: string }; draft: boolean; body: string }[] = [];
+  let commitWrites = 0;
+  let loseReferenceAcknowledgement = false;
+  let losePullAcknowledgement = false;
+  let moveBeforePublication = false;
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path, body) => {
+    if (path === '/repos/owner/repo') return { default_branch: 'main' };
+    if (path.includes('/git/ref/')) {
+      const sha = refs.get(path.split('/git/ref/')[1]!);
+      return sha ? { object: { sha } } : Response.json({ message: 'Missing ref' }, { status: 404 });
+    }
+    if (path.includes('/git/commits/') && method === 'GET') return commits.get(path.split('/git/commits/')[1]!)!;
+    if (path.includes('/git/trees/') && method === 'GET') return { truncated: false, tree: trees.get(path.split('/git/trees/')[1]!)! };
+    if (path.endsWith('/git/trees') && method === 'POST') {
+      const files = new Map((trees.get(String(body.base_tree)) ?? []).map(file => [file.path, file]));
+      for (const file of body.tree as (typeof baselineFiles[number] & { content?: string })[]) {
+        files.set(file.path, file.content === undefined ? file : entry(file.path, file.content));
+      }
+      const result = [...files.values()].sort((first, second) => first.path < second.path ? -1 : first.path > second.path ? 1 : 0);
+      const sha = digest(result).slice(0, 40);
+      trees.set(sha, result);
+      return { sha };
+    }
+    if (path.endsWith('/git/commits') && method === 'POST') {
+      commitWrites += 1;
+      const sha = digest(body).slice(0, 40);
+      commits.set(sha, { message: String(body.message), tree: { sha: String(body.tree) },
+        parents: (body.parents as string[]).map(parent => ({ sha: parent })) });
+      if (moveBeforePublication) refs.set(`heads/${state.branch}`, targetSha);
+      return { sha };
+    }
+    if (path.endsWith('/git/refs') && method === 'POST') {
+      refs.set(String(body.ref).slice('refs/'.length), String(body.sha));
+      return { object: { sha: body.sha } };
+    }
+    if (path.includes('/git/refs/') && method === 'PATCH') {
+      assert.equal(body.force, false);
+      const ref = path.split('/git/refs/')[1]!;
+      assert.notEqual(ref, 'heads/main');
+      refs.set(ref, String(body.sha));
+      if (loseReferenceAcknowledgement) {
+        loseReferenceAcknowledgement = false;
+        throw new Error('Lost reference acknowledgement');
+      }
+      return { object: { sha: body.sha } };
+    }
+    if (path.endsWith('/pulls')) {
+      if (method === 'GET') return pulls;
+      assert.equal(body.draft, true);
+      assert.equal(body.base, 'main');
+      assert.notEqual(body.head, state.branch);
+      const pull = { number: 456, user: { login: 'sdlc[bot]' }, head: { sha: refs.get(`heads/${body.head}`)! },
+        draft: true, body: String(body.body) };
+      pulls.push(pull);
+      if (losePullAcknowledgement) {
+        losePullAcknowledgement = false;
+        throw new Error('Lost pull request acknowledgement');
+      }
+      return pull;
+    }
+    throw new Error(`Unexpected recovery request: ${method} ${path}`);
+  }));
+  return { github, targetSha, refs, pulls, commits, trees, commitWrites: () => commitWrites,
+    loseReference: () => { loseReferenceAcknowledgement = true; }, losePull: () => { losePullAcknowledgement = true; },
+    moveBranch: () => { moveBeforePublication = true; } };
+}
+
+test('integration publishing retries a lost acknowledgement without losing feature or baseline changes', async () => {
+  const { state } = active();
+  state.headSha = newSha;
+  const fixture = recoveryRepository(state);
+  beginAmendment(state, { sha: fixture.targetSha, branch: 'main' }, state.request, 'Keep feature and baseline fix', true, true);
+  state.amendment!.plan = makePlan('Keep feature with baseline fix', 1);
+  state.amendment!.status = 'awaiting_approval';
+  state.phase = 'awaiting_amendment';
+  decideAmendment(state, 2, 'maintainer', 2, '2026-09-17T12:00:00Z', true,
+    { sha: fixture.targetSha, branch: 'main' }, state.request, true);
+  const job = startJob(state, 'integrate', '2026-09-17T12:01:00Z');
+  const hash = await fixture.github.integration(state);
+  await assert.rejects(fixture.github.applyIntegration(state, job, 'f'.repeat(64)), /authority changed/);
+  fixture.loseReference();
+  await assert.rejects(fixture.github.applyIntegration(state, job, hash), /Lost reference/);
+  assert.equal(fixture.commitWrites(), 1);
+  const sha = await fixture.github.applyIntegration(state, job, hash);
+  assert.equal(fixture.commitWrites(), 1);
+  assert.deepEqual(fixture.commits.get(sha)!.parents.map(parent => parent.sha), [newSha, fixture.targetSha]);
+  const files = fixture.trees.get(fixture.commits.get(sha)!.tree.sha)!;
+  assert.ok(files.some(file => file.path === 'apps/new.js'));
+  assert.equal(files.find(file => file.path === 'test/existing.test.ts')!.sha,
+    fixture.trees.get(fixture.commits.get(fixture.targetSha)!.tree.sha)!.find(file => file.path === 'test/existing.test.ts')!.sha);
+  assert.equal(fixture.refs.get('heads/main'), fixture.targetSha);
+  fixture.refs.set('heads/main', baseSha);
+  await assert.rejects(fixture.github.integration(state), /baseline moved/);
+});
+
+test('integration refuses a moved working branch instead of force-publishing over it', async () => {
+  const { state } = active();
+  state.headSha = newSha;
+  const fixture = recoveryRepository(state);
+  beginAmendment(state, { sha: fixture.targetSha, branch: 'main' }, state.request, 'Baseline repair', true, true);
+  state.amendment!.plan = makePlan('Baseline repair', 1);
+  state.amendment!.status = 'awaiting_approval';
+  state.phase = 'awaiting_amendment';
+  decideAmendment(state, 2, 'maintainer', 2, '2026-09-17T12:00:00Z', true,
+    { sha: fixture.targetSha, branch: 'main' }, state.request, true);
+  const job = startJob(state, 'integrate', '2026-09-17T12:01:00Z');
+  const hash = await fixture.github.integration(state);
+  fixture.moveBranch();
+  await assert.rejects(fixture.github.applyIntegration(state, job, hash), /moved before publication/);
+  assert.equal(fixture.refs.get(`heads/${state.branch}`), fixture.targetSha);
+});
+
+test('maintenance publication verifies authorization and reuses the exact draft PR after response loss', async () => {
+  const { state, job } = active();
+  state.headSha = newSha;
+  state.controlSha = 'c'.repeat(40);
+  const fixture = recoveryRepository(state);
+  const recovery = routeRecovery(state, job, { jobId: job.id, inputSha: job.inputSha, outcome: 'blocked', summary: 'Baseline defect',
+    changes: [], blocker: { category: 'baseline_defect', scope: 'repository', paths: ['test/existing.test.ts'],
+      constraint: 'Immutable baseline', diagnostics: [], remedies: ['Propose a repair'] } }, policy, ['test/existing.test.ts'], '2026-09-17T12:00:00Z');
+  const changes = [{ path: 'test/existing.test.ts', content: 'reviewed proposed repair' }];
+  const hash = digest({ baseSha: recovery.maintenanceBase, recoveryId: recovery.id, changes });
+  recovery.maintenance = { changes, hash, summary: 'Proposed repair; tests and scanner remain required' };
+  await assert.rejects(fixture.github.publishMaintenance(state, recovery.id, hash), /integrity/);
+  recovery.maintenanceAuthorization = { actor: 'maintainer', commentId: 2, hash, at: '2026-09-17T12:01:00Z' };
+  fixture.losePull();
+  await assert.rejects(fixture.github.publishMaintenance(state, recovery.id, hash), /Lost pull request/);
+  assert.equal(await fixture.github.publishMaintenance(state, recovery.id, hash), 456);
+  assert.equal(fixture.commitWrites(), 1);
+  assert.equal(fixture.pulls.length, 1);
+  assert.equal(fixture.refs.get('heads/main'), fixture.targetSha);
+  assert.equal(state.headSha, newSha);
+  assert.equal(fixture.refs.has(`heads/${state.branch}`), false);
+  recovery.maintenance.changes[0]!.content = 'tampered';
+  await assert.rejects(fixture.github.publishMaintenance(state, recovery.id, hash), /integrity/);
+});
 
 test('artifact decoding accepts only the bounded result file and a strict schema', () => {
   const report = { jobId: '123-1', inputSha: baseSha, outcome: 'pass', summary: 'Done', changes: [] };
@@ -618,7 +770,8 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   assert.doesNotMatch(cost, /later-observed-model/);
   assert.match(cost, /Cost snapshot at PR creation/);
   assert.match(cost, /Pending cost collection:\*\* 1 job\(s\) are excluded from these totals/);
-  assert.match(cost, /https:\/\/github.com\/owner\/repo\/issues\/123/);
+  const lifecycleLink = /\[Lifecycle status\]\(([^)]+)\)/.exec(cost)?.[1];
+  assert.equal(lifecycleLink, 'https://github.com/owner/repo/issues/123');
   assert.equal(String(pulls[0]!.body), snapshot, 'Later costs and configuration cannot rewrite the original PR snapshot');
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0]!.event, 'COMMENT');
