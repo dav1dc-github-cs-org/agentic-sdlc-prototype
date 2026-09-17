@@ -132,7 +132,8 @@
     "feedback": "",
     "attempt": 1,
     "createdAt": "2026-09-17T02:11:01.901Z",
-    "dispatchedAt": "2026-09-17T02:11:03.050Z"
+    "dispatchedAt": "2026-09-17T02:11:03.050Z",
+    "runId": 35173429058
   },
   "evidence": [],
   "processedEvents": [
@@ -444,13 +445,12 @@
         "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
         "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
         "createdAt": "2026-09-17T01:48:58.311Z",
+        "runId": 35172001612,
         "taskId": "static-app-and-packaging",
-        "attempt": 1,
-        "runId": 35172001612
+        "attempt": 1
       },
       "persona": "sdlc-code",
       "observed": {
-        "runnerMs": 1248000,
         "credits": 249.33942,
         "preempted": false,
         "creditLimit": 300,
@@ -470,7 +470,8 @@
               "cacheWriteTokens": 104666
             }
           ]
-        }
+        },
+        "runnerMs": 1248000
       },
       "acceptedResult": {
         "outcome": "pass",
