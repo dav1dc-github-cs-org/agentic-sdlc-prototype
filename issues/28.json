@@ -122,11 +122,22 @@
   ],
   "tasksLinked": true,
   "retiredTasks": [],
+  "job": {
+    "id": "28-5",
+    "stage": "code",
+    "inputSha": "75bbd5625a3cb8d98c9c9108eb7be908490d479c",
+    "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+    "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+    "taskId": "computer-opponent",
+    "feedback": "",
+    "attempt": 1,
+    "createdAt": "2026-09-17T00:54:03.746Z"
+  },
   "evidence": [],
   "processedEvents": [
     "comment:5706558011"
   ],
-  "sequence": 4,
+  "sequence": 5,
   "repairs": 0,
   "failures": 0,
   "spend": {
