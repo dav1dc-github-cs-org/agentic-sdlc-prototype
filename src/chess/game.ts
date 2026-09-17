@@ -106,6 +106,16 @@ export class ChessGame {
   }
 
   /**
+   * All legal moves in the current position as verbose `Move` objects, in
+   * the library's own returned order, with distinct entries per promotion
+   * piece choice. Used by the computer opponent (REQ-008) to select among
+   * moves without reimplementing move generation.
+   */
+  legalMovesVerbose(): Move[] {
+    return this.chess.moves({ verbose: true });
+  }
+
+  /**
    * Applies a move described by from/to (+ optional promotion piece).
    * Throws `IllegalMoveError` and leaves state unchanged if the library
    * rejects it (including moves that would expose the mover's own king).
