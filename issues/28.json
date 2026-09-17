@@ -131,7 +131,8 @@
     "taskId": "chess-documentation",
     "feedback": "",
     "attempt": 1,
-    "createdAt": "2026-09-17T02:11:01.901Z"
+    "createdAt": "2026-09-17T02:11:01.901Z",
+    "dispatchedAt": "2026-09-17T02:11:03.050Z"
   },
   "evidence": [],
   "processedEvents": [
