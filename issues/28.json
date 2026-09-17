@@ -116,7 +116,8 @@
       "dependsOn": [
         "static-app-and-packaging"
       ],
-      "completed": false
+      "completed": false,
+      "issueNumber": 34
     }
   ],
   "retiredTasks": [],
