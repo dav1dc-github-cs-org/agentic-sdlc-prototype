@@ -133,7 +133,8 @@
     "attempt": 1,
     "createdAt": "2026-09-17T00:35:33.425Z",
     "dispatchedAt": "2026-09-17T00:35:34.910Z",
-    "runId": 35167186196
+    "runId": 35167186196,
+    "costedRun": 35167186196
   },
   "evidence": [],
   "processedEvents": [
@@ -143,9 +144,9 @@
   "repairs": 0,
   "failures": 0,
   "spend": {
-    "runs": 2,
-    "runnerMs": 808000,
-    "credits": 108.26967,
+    "runs": 3,
+    "runnerMs": 1226000,
+    "credits": 166.1069,
     "nearLimit": 0,
     "preempted": 0,
     "models": [
@@ -234,6 +235,43 @@
       "acceptedResult": {
         "outcome": "pass",
         "outputSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7"
+      }
+    },
+    {
+      "job": {
+        "id": "28-3",
+        "stage": "code",
+        "inputSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "controlSha": "b2576c305c72e149db65a68f29dfa56506ecaaf7",
+        "planHash": "b9fbb143d1bff5ea0808650a56383123378c20f8b75e52c3300267e3db52b2fa",
+        "createdAt": "2026-09-17T00:35:33.425Z",
+        "taskId": "vendor-chessjs",
+        "attempt": 1,
+        "runId": 35167186196
+      },
+      "persona": "sdlc-code",
+      "observed": {
+        "runnerMs": 418000,
+        "credits": 57.83723,
+        "preempted": false,
+        "creditLimit": 300,
+        "models": [
+          "claude-sonnet-5"
+        ],
+        "requestedModel": "auto",
+        "tokenUsage": {
+          "status": "available",
+          "models": [
+            {
+              "model": "claude-sonnet-5",
+              "requests": 37,
+              "inputTokens": 6217,
+              "outputTokens": 11047,
+              "cacheReadTokens": 1559829,
+              "cacheWriteTokens": 57401
+            }
+          ]
+        }
       }
     }
   ],
