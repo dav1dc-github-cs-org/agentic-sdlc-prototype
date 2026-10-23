@@ -8,7 +8,7 @@ import { assessChanges, describeCapabilities, validateChanges, type Capabilities
 import { blockerSchema, reportSchema, resolvePolicy, shaSchema, workerReportSchema, type Change, type Policy } from './contracts.ts';
 import { dependencyChanges, dependencyPlan, validatePlanPolicy, verifyDependencyFiles } from './dependencies.ts';
 import { GitHub } from './github.ts';
-import { assertJobAuthorization, executionHash, type Lifecycle, type Stage } from './lifecycle.ts';
+import { activeDecisions, assertJobAuthorization, executionHash, type Lifecycle, type Stage } from './lifecycle.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -134,7 +134,10 @@ async function prepare(): Promise<void> {
     writeDraft(join(workspace, 'source'), changes);
   }
   restoreCheckpoint(record.state, join(workspace, 'source'), policy, capabilities.immutableTests);
-  writeFileSync(join(workspace, '.sdlc-context.json'), JSON.stringify({ state: record.state, policy, capabilities }, null, 2));
+  writeFileSync(join(workspace, '.sdlc-context.json'), JSON.stringify({
+    state: record.state, policy, capabilities,
+    decisions: record.state.job!.purpose ? [] : activeDecisions(record.state),
+  }, null, 2));
   mkdirSync(join(workspace, '.sdlc-output'), { recursive: true });
   if (input.stage === 'security' || input.stage === 'code') {
     const security = input.stage === 'security';

@@ -170,10 +170,14 @@ export function resolveBlocker(blocker: Blocker, policy: Policy, baselineTests: 
     return { ...blocker, paths, category: 'unsafe_output', scope: 'repository' };
   }
   if (blocker.category === 'unsafe_output') return { ...blocker, paths, scope: 'repository' };
+  if (blocker.category === 'capability_gap') return { ...blocker, paths };
   const immutable = paths.some(path => isProtectedPath(path, policy) ||
     isTestPath(path, policy) && baselineTests.includes(path));
-  if (immutable) return { ...blocker, paths, category: 'baseline_defect', scope: 'repository' };
+  if (immutable && blocker.category === 'candidate_defect') {
+    return { ...blocker, paths, category: 'baseline_defect', scope: 'repository' };
+  }
   if (blocker.category === 'baseline_defect' && paths.length) {
+    if (immutable) return { ...blocker, paths, scope: 'repository' };
     validateChanges(paths.map(path => ({ path, content: '' })), 'code', policy, baselineTests);
     return { ...blocker, paths, category: 'candidate_defect' };
   }
@@ -191,7 +195,8 @@ export function routeRecovery(state: Lifecycle, job: Job, report: Report, policy
   baselineTests: readonly string[], at: string): Recovery {
   if (!report.blocker) throw new Error('Structured recovery requires a blocker');
   const blocker = resolveBlocker(report.blocker, policy, baselineTests);
-  if (job.purpose === 'baseline_preflight' && !['unsafe_output', 'transient', 'incomplete_work'].includes(blocker.category)) {
+  if (job.purpose === 'baseline_preflight' &&
+      !['unsafe_output', 'transient', 'incomplete_work', 'capability_gap'].includes(blocker.category)) {
     blocker.category = 'baseline_defect';
     blocker.scope = 'repository';
   }
@@ -209,7 +214,8 @@ export function routeRecovery(state: Lifecycle, job: Job, report: Report, policy
   recovery.blocker = blocker;
   recovery.action = {
     transient: 'retry', candidate_defect: 'repair', incomplete_work: 'continue',
-    approval_conflict: 'amend', baseline_defect: 'maintain', unsafe_output: 'reject',
+    approval_conflict: 'amend', decision_required: 'amend', capability_gap: 'prerequisite',
+    baseline_defect: 'maintain', unsafe_output: 'reject',
   }[blocker.category] as Recovery['action'];
   if (report.split && blocker.category === 'incomplete_work') {
     splitTask(state, job, report.split);
@@ -227,7 +233,7 @@ export function routeRecovery(state: Lifecycle, job: Job, report: Report, policy
     recovery.attemptedKeys.push(actionKey);
     if (recovery.action === 'repair') state.repairs += 1;
   } else recovery.status = recovery.action === 'reject' ? 'rejected' :
-    recovery.action === 'maintain' ? 'waiting_maintainer' : 'waiting_approval';
+    recovery.action === 'maintain' || recovery.action === 'prerequisite' ? 'waiting_maintainer' : 'waiting_approval';
   if (recovery.action === 'continue' && report.changes.length && recovery.status === 'active') {
     validateChanges(report.changes, job.stage, policy, baselineTests);
     const { id, stage, inputSha, controlSha, planHash, createdAt, runId, taskId, attempt, stepId, executionHash } = job;

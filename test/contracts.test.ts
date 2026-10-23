@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { costSchema, lifecycleSchema, migrateLifecycle, parseIntakeEvent, policySchema, reportSchema, resolvePolicy } from '../src/contracts.ts';
+import { costSchema, lifecycleSchema, migrateLifecycle, parseIntakeEvent, planPolicySchema, policySchema, reportSchema, resolvePolicy } from '../src/contracts.ts';
 import { assessChanges, describeCapabilities, mergeSnapshots, validateChanges } from '../src/changes.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
 import { createLifecycle } from '../src/lifecycle.ts';
@@ -58,6 +58,35 @@ test('structured recovery blockers preserve diagnostics without granting authori
   ]) assert.throws(() => reportSchema.parse({ ...report, blocker }));
   assert.throws(() => reportSchema.parse({ ...report, outcome: 'pass' }), /unresolved blockers/);
   assert.doesNotThrow(() => reportSchema.parse({ ...report, blocker: undefined }));
+});
+
+test('decision grants and proposals are bounded by the approved plan contract', () => {
+  const grant = { id: 'DEC-001', question: 'Which compatible adapter should be used?',
+    options: [{ id: 'adapter-a', description: 'Use the existing adapter' }, { id: 'adapter-b', description: 'Use the fallback adapter' }],
+    selectionCriteria: ['Prefer the adapter already used by adjacent code'],
+    requirementIds: ['REQ-001'] };
+  const planPolicy = { allowTaskSplits: false, vendorSecurityPatches: [], dependencies: [],
+    requirements: [{ id: 'REQ-001', text: 'Keep the integration compatible' }], decisionGrants: [grant] };
+  assert.deepEqual(planPolicySchema.parse(planPolicy), planPolicy);
+  for (const invalid of [
+    { ...planPolicy, decisionGrants: [grant, grant] },
+    { ...planPolicy, decisionGrants: [{ ...grant, options: [grant.options[0], grant.options[0]] }] },
+    { ...planPolicy, decisionGrants: [{ ...grant, requirementIds: ['REQ-001', 'REQ-001'] }] },
+    { ...planPolicy, decisionGrants: [{ ...grant, requirementIds: ['REQ-002'] }] },
+    { ...planPolicy, decisionGrants: [{ ...grant, options: [grant.options[0]] }] },
+  ]) assert.throws(() => planPolicySchema.parse(invalid));
+
+  const blocked = { jobId: '123-1', inputSha: 'a'.repeat(40), outcome: 'blocked', summary: 'Selection required',
+    changes: [], blocker: { category: 'decision_required', scope: 'task', paths: [], constraint: 'Choose a compatible adapter',
+      diagnostics: [], remedies: ['Select one option'] },
+    decision: { grantId: 'DEC-001', optionId: 'adapter-a', rationale: 'The current code uses this API',
+      evidence: ['src/client.ts imports adapter-a'] } };
+  assert.deepEqual(reportSchema.parse(blocked), blocked);
+  assert.throws(() => reportSchema.parse({ ...blocked, outcome: 'pass' }), /unresolved blockers/);
+  assert.throws(() => reportSchema.parse({ ...blocked, changes: [{ path: 'src/feature.ts', content: 'change' }] }),
+    /cannot include code or test changes/);
+  assert.throws(() => reportSchema.parse({ ...blocked, decision: { ...blocked.decision, evidence: [] } }));
+  assert.throws(() => reportSchema.parse({ ...blocked, blocker: { ...blocked.blocker, category: 'capability_gap' } }));
 });
 
 test('validation never rewrites the text that plan hashes are computed over', () => {

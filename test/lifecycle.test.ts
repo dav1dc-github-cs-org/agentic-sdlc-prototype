@@ -5,7 +5,7 @@ import { approvePlan, makePlan } from '../src/domain.ts';
 import { lifecycleSchema, policySchema, type Cost } from '../src/contracts.ts';
 import { beginAmendment, resolveBlocker, retainCompletedTasks, routeRecovery, splitTask, validateRequirementCoverage } from '../src/recovery.ts';
 import {
-  assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, formatObservedModels, nextTask, observeCost, recordChange, recordSpend,
+  acceptDelegatedDecision, activeDecisions, assertCurrentResult, assertPublishable, createLifecycle, deferCost, executionHash, forgetCost, formatObservedModels, nextTask, observeCost, recordChange, recordSpend,
   recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Task,
 } from '../src/lifecycle.ts';
 
@@ -49,6 +49,86 @@ test('structured recovery verifies baseline ownership and stops identical determ
   assert.equal(state.recoveries![0]!.status, 'exhausted');
   assert.equal(state.repairs, 1);
   assert.deepEqual(lifecycleSchema.parse(JSON.parse(JSON.stringify(state))), JSON.parse(JSON.stringify(state)));
+});
+
+test('capability gaps remain prerequisite blockers even when they mention immutable files', () => {
+  const state = approvedState();
+  state.tasks.push({ id: 'independent', title: 'Independent', description: 'Separate work',
+    acceptance: ['Works'], dependsOn: [], completed: false });
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  const blocker = { category: 'capability_gap' as const, scope: 'task' as const, paths: ['src/controller.ts'],
+    constraint: 'The required tool is unavailable', diagnostics: [], remedies: ['Install the approved tool'] };
+  const resolved = resolveBlocker(blocker, policy, ['test/existing.test.ts']);
+  assert.equal(resolved.category, 'capability_gap');
+  assert.equal(resolved.scope, 'task');
+
+  const recovery = routeRecovery(state, job, { jobId: job.id, inputSha: baseSha,
+    outcome: 'blocked', summary: 'The prerequisite is unavailable', changes: [], blocker }, policy,
+  ['test/existing.test.ts'], at);
+  assert.equal(recovery.action, 'prerequisite');
+  assert.equal(recovery.status, 'waiting_maintainer');
+  assert.equal(state.phase, 'coding');
+  assert.equal(nextTask(state)!.id, 'independent');
+  assert.equal(state.maintenanceRecovery, undefined);
+
+  const preflight = approvedState();
+  preflight.phase = 'preflighting';
+  preflight.preflight = { kind: 'baseline', sourceSha: baseSha, resumePhase: 'researching' };
+  const scan = startJob(preflight, 'scan', at);
+  const preflightRecovery = routeRecovery(preflight, scan, { jobId: scan.id, inputSha: baseSha,
+    outcome: 'blocked', summary: 'Scanner capability unavailable', changes: [],
+    blocker: { ...blocker, scope: 'repository', paths: ['.github/workflows/ci.yml'] } }, policy, [], at);
+  assert.equal(preflightRecovery.blocker.category, 'capability_gap');
+  assert.equal(preflightRecovery.action, 'prerequisite');
+  assert.equal(preflight.maintenanceRecovery, undefined);
+});
+
+test('delegated decisions require an exact grant and remain bound to their approved plan', () => {
+  const state = approvedState();
+  state.plan = makePlan('Approved adapter choice', 0, { allowTaskSplits: false, vendorSecurityPatches: [], dependencies: [],
+    requirements: [{ id: 'REQ-001', text: 'Keep the adapter compatible' }],
+    decisionGrants: [{ id: 'DEC-001', question: 'Select an adapter',
+      options: [{ id: 'adapter-a', description: 'Existing adapter' }, { id: 'adapter-b', description: 'Fallback adapter' }],
+      selectionCriteria: ['Prefer existing use'], requirementIds: ['REQ-001'] }] });
+  state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
+    authorized: true, actor: 'requester', commentId: 2, at });
+  state.tasks[1]!.requirementIds = ['REQ-001'];
+  state.phase = 'coding';
+  const job = startJob(state, 'code', at);
+  job.runId = 44;
+  const proposal = { grantId: 'DEC-001', optionId: 'adapter-a', rationale: 'Existing code uses it',
+    evidence: ['src/client.ts imports adapter-a'] };
+  const before = executionHash(state);
+  const approval = state.approval;
+  state.approval = undefined;
+  assert.deepEqual(acceptDelegatedDecision(state, job, 44, proposal, at),
+    { accepted: false, reason: 'No intact approved plan authorizes delegated decisions' });
+  state.approval = approval;
+  assert.deepEqual(acceptDelegatedDecision(state, { ...job, inputSha: 'd'.repeat(40) }, 44, proposal, at),
+    { accepted: false, reason: 'The registered stage or plan does not authorize this decision' });
+  assert.deepEqual(acceptDelegatedDecision(state, { ...job, purpose: 'dependency_repair' }, 44, proposal, at),
+    { accepted: false, reason: 'The registered stage or plan does not authorize this decision' });
+  const planHash = job.planHash;
+  job.planHash = 'c'.repeat(64);
+  assert.deepEqual(acceptDelegatedDecision(state, job, 44, proposal, at),
+    { accepted: false, reason: 'The registered stage or plan does not authorize this decision' });
+  job.planHash = planHash;
+  job.taskId = 'api';
+  assert.deepEqual(acceptDelegatedDecision(state, job, 44, proposal, at),
+    { accepted: false, reason: 'Decision grant DEC-001 does not apply to the registered task' });
+  job.taskId = 'model';
+  assert.deepEqual(acceptDelegatedDecision(state, job, 44, proposal, at), { accepted: true });
+  assert.notEqual(executionHash(state), before);
+  assert.equal(activeDecisions(state).length, 1);
+  const retry = startJob(state, 'code', at);
+  retry.runId = 45;
+  assert.deepEqual(acceptDelegatedDecision(state, retry, 45, proposal, at),
+    { accepted: false, reason: 'Decision grant DEC-001 was already resolved for this plan' });
+
+  state.plan = makePlan('Revised plan', 1);
+  assert.equal(activeDecisions(state).length, 0);
+  assert.equal(executionHash(state), before);
 });
 
 test('task-local approval conflicts leave unrelated tasks available without authorizing the blocked task', () => {

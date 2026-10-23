@@ -23,7 +23,9 @@ a small feature may need only a short comparison, not a redesign of the system.
 2. **Product requirements**: Identify the requirements that drive technology
 	choices: user interaction, deployment environment, data and persistence,
 	privacy and security, maintainability, expected scale, and relevant team or
-	operator constraints. Separate verified facts from assumptions and questions.
+	operator constraints. Separate hard requirements from preferences, and
+	prioritize preferences. Separate verified facts from assumptions and
+	questions.
 3. **Options and tradeoffs**: Compare two or three credible approaches against
 	those requirements, including a minimal option and reuse of the application's
 	existing stack when relevant. Do not invent alternatives solely to fill a
@@ -70,7 +72,19 @@ the Markdown plan. Enumerate stable requirement IDs, conservatively proposed
 task-splitting permission, any exact vendor-patch permissions, and all newly
 vendored public npm dependencies with verified archive paths and SHA-256 hashes.
 These are proposals for human approval, not permission to install or change
-source. Allow only alternatives that satisfy the same product requirements.
+source. Allow only alternatives that satisfy the same hard requirements.
+
+For a small, reversible choice that should not block implementation, propose a
+`decisionGrants` entry with a stable `DEC-NNN` ID, the precise question, two to
+six concrete options, and observable selection criteria. Keep each choice
+within the approved scope and list any linked requirement IDs. Do not grant
+authority to discard a hard requirement, change a public contract, add
+dependencies or permissions, weaken validation, or make an irreversible or
+high-impact decision. The requester approves the exact grant as part of the
+hashed plan. An ungranted or conflicting hard requirement still needs a new
+human decision through amendment or revision; do not turn a blocker into a
+preference to avoid asking.
+
 If the issue requires byte-identical upstream files, do not silently propose
 patch authority as though it were already allowed; identify the explicit scope
 decision in an amendment. Preflight findings remain required failures until a
@@ -80,4 +94,3 @@ For an amendment job, retain the previous plan's unchanged requirement IDs and
 text, describe the exact changed constraint and remedy, and use the preserved
 source and newly nominated baseline. Do not restart the feature specification
 unnecessarily. Approval and integration are later controller-owned steps.
-
