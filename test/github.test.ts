@@ -749,7 +749,7 @@ test('publication bounds the complete PR body and links full oversized records',
   assert.match(pullBody, /Full approved plan and approval record/);
   assert.match(pullBody, /Full decision rationale and evidence in the issue timeline/);
   assert.match(pullBody, /Full report and evidence/);
-  assert.match(pullBody, /https:\/\/github\.com\/owner\/repo\/issues\/123/);
+  assert.ok(pullBody.includes('(https://github.com/owner/repo/issues/123)'));
   assert.match(pullBody, /Agent reviews are advisory/);
   assert.match(pullBody, /Fixes issue #455/);
 });
