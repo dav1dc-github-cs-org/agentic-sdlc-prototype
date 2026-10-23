@@ -121,9 +121,11 @@ criteria, and optionally the requirement IDs it applies to. Approval binds
 those grants to the plan hash. A worker may select an exact option only for a
 small, reversible ambiguity; the controller records its rationale and evidence,
 binds the decision to the registered job and plan, invalidates prior gate
-evidence, and resumes that stage. Requirement-scoped grants are accepted only
-for a registered task covering those requirements. A hard-requirement conflict,
-missing grant, or already-used grant still needs a human amendment or revision.
+evidence, and resumes that stage. After it passes, the controller schedules any
+missing current-commit gates in order; Review is repeated last when needed.
+Requirement-scoped grants are accepted only for a registered task covering
+those requirements. A hard-requirement conflict, missing grant, or already-used
+grant still needs a human amendment or revision.
 
 To change the approach, post a new comment:
 

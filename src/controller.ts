@@ -6,7 +6,7 @@ import { activateVendorRepair, beginAmendment, decideAmendment, enterPreflight, 
   validateMaintenance, validateRequirementCoverage } from './recovery.ts';
 import {
   acceptDelegatedDecision, assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, formatObservedModels,
-  nextTask, observeCost, recordChange,
+  nextPublicationPhase, nextTask, observeCost, recordChange,
   recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Job, type JobIdentity, type Lifecycle, type PendingCost, type Stage, type Task,
 } from './lifecycle.ts';
 
@@ -580,6 +580,7 @@ export class Controller {
       state.planVersion = plan.version;
       if (job.purpose === 'amendment' && state.amendment) {
         state.amendment.plan = plan;
+        state.decisionRecovery = undefined;
         if (plan.policy?.integrationResolutions?.length) state.amendment.requiredMaintainer = true;
         state.dependencyChoices = undefined;
         state.amendment.status = 'awaiting_approval';
@@ -589,6 +590,7 @@ export class Controller {
         }
       } else {
         state.plan = plan;
+        state.decisionRecovery = undefined;
         state.phase = 'awaiting_approval';
         if (this.policy.preflight && plan.policy?.dependencies.length) enterPreflight(state, 'dependencies', 'awaiting_approval');
       }
@@ -626,13 +628,24 @@ export class Controller {
     } else {
       state.evidence = state.evidence.filter(item => item.stage !== job.stage);
       state.evidence.push({ stage: job.stage, sha: state.headSha, jobId: job.id, runId: run.id, summary: report.summary });
-      if (job.stage === 'scan') state.phase = 'security';
-      if (job.stage === 'security') state.phase = state.evidence.some(item => item.stage === 'test' && item.sha === state.headSha)
-        ? 'validating' : 'testing';
-      if (job.stage === 'test') state.phase = report.changes.length ? 'scanning' : 'validating';
-      if (job.stage === 'validate') state.phase = 'documenting';
-      if (job.stage === 'document') state.phase = report.changes.length ? 'scanning' : 'reviewing';
-      if (job.stage === 'review') state.phase = 'publishing';
+      if (state.decisionRecovery) {
+        if (job.stage === 'document' && report.changes.length) {
+          state.evidence = state.evidence.filter(item => item.stage !== 'document');
+        }
+        if (job.stage === 'review' && nextPublicationPhase(state) !== 'publishing') {
+          state.evidence = state.evidence.filter(item => item.stage !== 'review');
+        }
+        state.phase = nextPublicationPhase(state);
+        if (state.phase === 'publishing') state.decisionRecovery = undefined;
+      } else {
+        if (job.stage === 'scan') state.phase = 'security';
+        if (job.stage === 'security') state.phase = state.evidence.some(item => item.stage === 'test' && item.sha === state.headSha)
+          ? 'validating' : 'testing';
+        if (job.stage === 'test') state.phase = report.changes.length ? 'scanning' : 'validating';
+        if (job.stage === 'validate') state.phase = 'documenting';
+        if (job.stage === 'document') state.phase = report.changes.length ? 'scanning' : 'reviewing';
+        if (job.stage === 'review') state.phase = 'publishing';
+      }
     }
     await this.platform.save(record);
     await this.platform.comment(state.issueNumber, `job:${job.id}`, `### ${job.stage}\n\n${report.summary}\n\n[Workflow evidence](${run.url})`);

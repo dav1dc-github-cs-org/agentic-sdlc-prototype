@@ -704,6 +704,56 @@ test('an unrelated pull request found by pagination blocks publication', async (
   await assert.rejects(github.publish(state), /unrelated pull request/);
 });
 
+test('publication bounds the complete PR body and links full oversized records', async () => {
+  const state = publishable();
+  const decisionGrants = Array.from({ length: 100 }, (_, index) => ({
+    id: `DEC-${String(index + 1).padStart(3, '0')}`,
+    question: 'Select a compatible adapter',
+    options: [{ id: 'adapter-a', description: 'Use the existing adapter' },
+      { id: 'adapter-b', description: 'Use the fallback adapter' }],
+    selectionCriteria: ['Prefer the adapter already used by adjacent code'],
+  }));
+  state.plan = makePlan('Fixes #455. '.repeat(2_000), 0, {
+    allowTaskSplits: false, vendorSecurityPatches: [], dependencies: [], decisionGrants,
+  });
+  state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
+    authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
+  state.decisionHistory = decisionGrants.map((grant, index) => ({
+    grantId: grant.id, optionId: 'adapter-a', rationale: 'Fixes #455. '.repeat(180),
+    evidence: Array.from({ length: 6 }, () => 'Resolves #455. '.repeat(65)),
+    job: { id: `123-${index + 1}`, stage: 'code', inputSha: baseSha, controlSha: baseSha,
+      planHash: state.plan!.hash, createdAt: '2026-09-08T12:00:00Z', runId: index + 1,
+      taskId: 'feature', attempt: 1 },
+    decidedAt: '2026-09-08T12:05:00Z',
+  }));
+  state.evidence = ['scan', 'security', 'test', 'validate', 'document', 'review'].map((stage, index) => ({
+    stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review',
+    sha: newSha, jobId: `123-${stage}`, runId: index + 20, summary: 'Closes #455. '.repeat(990),
+  }));
+  let pullBody = '';
+  const github = new GitHub('owner/repo', policy, 'sdlc[bot]', api((method, path, body) => {
+    if (path.includes('/git/ref/')) return { object: { sha: newSha } };
+    if (path.endsWith('/issues/123')) return { title: 'Feature', body: 'Request', user: { login: 'requester' }, state: 'open', labels: [] };
+    if (path.endsWith('/pulls')) {
+      if (method === 'GET') return [];
+      pullBody = String(body.body);
+      return { number: 126 };
+    }
+    if (path.endsWith('/reviews')) return method === 'GET' ? [] : { id: 1 };
+    if (path.endsWith('/check-runs')) return method === 'GET' ? { total_count: 0, check_runs: [] } : { id: 1 };
+    throw new Error(`Unexpected request: ${method} ${path}`);
+  }));
+
+  assert.equal(await github.publish(state), 126);
+  assert.ok(Buffer.byteLength(pullBody, 'utf8') <= 60_000);
+  assert.match(pullBody, /Full approved plan and approval record/);
+  assert.match(pullBody, /Full decision rationale and evidence in the issue timeline/);
+  assert.match(pullBody, /Full report and evidence/);
+  assert.match(pullBody, /https:\/\/github\.com\/owner\/repo\/issues\/123/);
+  assert.match(pullBody, /Agent reviews are advisory/);
+  assert.match(pullBody, /Fixes issue #455/);
+});
+
 test('final PR, advisory review, and commit check are idempotent and reference the reviewed SHA', async () => {
   const state = publishable();
   state.spend.models = ['claude-sonnet-4.6', 'gpt-5.4'];

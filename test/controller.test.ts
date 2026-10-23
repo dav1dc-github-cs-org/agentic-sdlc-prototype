@@ -301,6 +301,41 @@ test('controller accepts an exact approved decision, persists it, and resumes wi
   assert.match(platform.outputs.get(`decision:${job.id}`)!, /Bound to plan/);
 });
 
+test('a review-stage decision reruns invalidated gates before publishing', async () => {
+  const { platform, controller } = await codingWithDecisionGrant();
+  platform.finish({ changes: [{ path: 'feature.txt', content: 'Implement the approved choice' }] });
+  await controller.tick(123);
+  for (const stage of ['scan', 'security', 'test', 'validate', 'document']) {
+    assert.equal(platform.stored!.state.job!.stage, stage);
+    platform.finish();
+    await controller.tick(123);
+  }
+  assert.equal(platform.stored!.state.job!.stage, 'review');
+
+  platform.finish({ outcome: 'blocked', summary: 'Review needs the approved adapter choice',
+    blocker: { category: 'decision_required', scope: 'task', paths: [], constraint: 'Select the approved adapter',
+      diagnostics: [], remedies: ['Apply the granted adapter choice'] },
+    decision: { grantId: 'DEC-001', optionId: 'adapter-a', rationale: 'Adjacent code uses the same adapter',
+      evidence: ['src/client.ts imports the adapter'] } });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'review');
+
+  platform.finish();
+  await controller.tick(123);
+  assert.equal(platform.dispatched.at(-1)?.stage, 'scan');
+  assert.equal(platform.stored!.state.evidence.some(item => item.stage === 'review'), false);
+  const rerun: string[] = [];
+  for (const stage of ['scan', 'security', 'test', 'validate', 'document', 'review']) {
+    assert.equal(platform.dispatched.at(-1)?.stage, stage);
+    rerun.push(stage);
+    platform.finish();
+    await controller.tick(123);
+    if (stage !== 'review') assert.equal(platform.published, 0);
+  }
+  assert.deepEqual(rerun, ['scan', 'security', 'test', 'validate', 'document', 'review']);
+  assert.equal(platform.published, 1);
+});
+
 test('controller rejects a decision option that the approved grant did not authorize', async () => {
   const { platform, controller } = await codingWithDecisionGrant();
   const job = platform.stored!.state.job!;

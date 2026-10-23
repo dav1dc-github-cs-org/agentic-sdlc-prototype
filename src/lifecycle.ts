@@ -4,6 +4,10 @@ import type { DependencyPatch } from './dependencies.ts';
 
 export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review' | 'integrate' | 'maintain';
 const delegatedDecisionStages: readonly Stage[] = ['decompose', 'code', 'security', 'test', 'document', 'review'];
+const publicationStages = ['scan', 'security', 'test', 'validate', 'document', 'review'] as const;
+const publicationPhases: Record<typeof publicationStages[number], Phase> = {
+  scan: 'scanning', security: 'security', test: 'testing', validate: 'validating', document: 'documenting', review: 'reviewing',
+};
 
 export interface Task {
   id: string;
@@ -113,6 +117,7 @@ export interface Lifecycle {
   amendment?: Amendment;
   amendmentHistory?: AmendmentDecision[];
   decisionHistory?: DelegatedDecisionRecord[];
+  decisionRecovery?: boolean;
   planVersion?: number;
   preflight?: { kind: 'baseline' | 'dependencies' | 'installed'; sourceSha: string;
     resumePhase: 'researching' | 'awaiting_approval' | 'awaiting_amendment' | 'decomposing' };
@@ -310,6 +315,7 @@ export function acceptDelegatedDecision(state: Lifecycle, job: Job, runId: numbe
   });
   state.job = undefined;
   state.evidence = [];
+  state.decisionRecovery = true;
   state.feedback = `Apply approved decision ${grant.id}: select ${proposal.optionId}. ${proposal.rationale}`;
   state.error = undefined;
   state.failures = 0;
@@ -389,6 +395,11 @@ export function recordChange(state: Lifecycle, sha: string): void {
   }
 }
 
+export function nextPublicationPhase(state: Pick<Lifecycle, 'evidence' | 'headSha'>): Phase {
+  const missing = publicationStages.find(stage => !state.evidence.some(item => item.stage === stage && item.sha === state.headSha));
+  return missing ? publicationPhases[missing] : 'publishing';
+}
+
 export function requestRepair(state: Lifecycle, feedback: string, maximum: number): void {
   state.job = undefined;
   state.evidence = [];
@@ -412,7 +423,7 @@ export function assertPublishable(state: Lifecycle): void {
       state.tasks.some(task => !task.completed) || state.headSha === state.baseSha) {
     throw new Error('Lifecycle is not ready for publication');
   }
-  for (const stage of ['scan', 'security', 'test', 'validate', 'document', 'review'] as const) {
+  for (const stage of publicationStages) {
     if (!state.evidence.some(item => item.stage === stage && item.sha === state.headSha)) {
       throw new Error(`Missing current ${stage} evidence`);
     }

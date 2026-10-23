@@ -157,6 +157,12 @@ Publication does not wait for them. Follow the linked epic's lifecycle status
 for later settlement and observed models, including after PR closure or merge;
 an existing PR body is not rewritten when receipts recover.
 
+The generated PR body has a 60,000-byte safety budget below GitHub's body limit.
+Long approved plans, delegated-decision details, and stage summaries are shortened
+in the PR body with links to the issue timeline or the corresponding Actions run,
+where the full records remain available. This bounds presentation only; the
+authoritative lifecycle history and gate evidence are not truncated.
+
 ### Retained Model Usage
 
 Settled attribution is stored in the lifecycle's optional `usageHistory` array

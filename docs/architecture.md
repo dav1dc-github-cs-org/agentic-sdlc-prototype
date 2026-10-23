@@ -233,17 +233,21 @@ Important details behind the diagram:
    test-preparation evidence so testing does not loop indefinitely.
 4. Any subsequent code change clears earlier evidence. Repair feedback also
    clears evidence, even when a repair later produces no file changes.
-5. Tasks marked implemented in state remain open as GitHub issues until merge.
+5. An accepted delegated decision clears gate evidence and retries its
+    requesting stage. After each gate result, the controller selects the
+    earliest required gate without current-commit evidence. If a Review retry
+    precedes missing gates, its evidence is discarded and Review runs again last.
+6. Tasks marked implemented in state remain open as GitHub issues until merge.
    The final PR contains `Closes #<epic-number>`; GitHub handles epic closure
    on merge to its default branch, and reconciliation closes child tasks.
-6. Invalid output, missing artifacts, pauses, and scope drift follow the
-  separate [Recovery Flow](#recovery-flow), not an unconditional success edge.
-  `ProcContinue` returns to the registered phase, not necessarily coding:
-  incomplete Security resumes Security, Testing resumes Testing, and so on.
-  Approved splits resume the next registered coding step. Proposal nodes may
-  wait for authority; a task-local wait can leave unrelated ready tasks running.
-7. Pending cost reconciliation is independent of these phases. It may continue
-  after cancellation or merge but never authorizes a worker result or new work.
+7. Invalid output, missing artifacts, pauses, and scope drift follow the
+   separate [Recovery Flow](#recovery-flow), not an unconditional success edge.
+   `ProcContinue` returns to the registered phase, not necessarily coding:
+   incomplete Security resumes Security, Testing resumes Testing, and so on.
+   Approved splits resume the next registered coding step. Proposal nodes may
+   wait for authority; a task-local wait can leave unrelated ready tasks running.
+8. Pending cost reconciliation is independent of these phases. It may continue
+   after cancellation or merge but never authorizes a worker result or new work.
 
 ## Approval Conversation
 

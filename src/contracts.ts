@@ -336,6 +336,7 @@ export const lifecycleSchema = z.object({
   decisionHistory: z.array(delegatedDecisionRecordSchema).max(100).refine(items =>
     new Set(items.map(item => `${item.job.planHash}:${item.grantId}`)).size === items.length,
   'Duplicate delegated decision for plan grant').optional(),
+  decisionRecovery: z.boolean().optional(),
   planVersion: numberSchema.optional(),
   preflight: z.object({ kind: z.enum(['baseline', 'dependencies', 'installed']), sourceSha: shaSchema,
     resumePhase: z.enum(['researching', 'awaiting_approval', 'awaiting_amendment', 'decomposing']) }).strict().optional(),

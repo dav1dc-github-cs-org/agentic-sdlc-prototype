@@ -44,6 +44,21 @@ export function neutralizeClosingKeywords(markdown: string): string {
   return markdown.replace(new RegExp(keyword, 'gi'), '$1 issue');
 }
 
+function boundedMarkdown(markdown: string, maxBytes: number, overflowNotice: string): string {
+  if (Buffer.byteLength(markdown, 'utf8') <= maxBytes) return markdown;
+  const suffix = `\n\n> Summary shortened. ${overflowNotice}`;
+  const availableBytes = maxBytes - Buffer.byteLength(suffix, 'utf8');
+  let prefix = '';
+  let prefixBytes = 0;
+  for (const character of markdown) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (prefixBytes + characterBytes > availableBytes) break;
+    prefix += character;
+    prefixBytes += characterBytes;
+  }
+  return `${prefix.trimEnd()}${suffix}`;
+}
+
 export class GitHub implements Platform {
   readonly api: Octokit;
   readonly scope: { owner: string; repo: string };
@@ -490,47 +505,61 @@ export class GitHub implements Platform {
     if (existing.length > mine.length) throw new Error('Working branch already has an unrelated pull request');
     let pullNumber = mine.find(candidate => candidate.state === 'open')?.number;
     if (!pullNumber && mine.length) throw new Error('The feature pull request for this plan was already closed');
-    const evidence = state.evidence.map(item =>
+    const issueUrl = `https://github.com/${this.scope.owner}/${this.scope.repo}/issues/${state.issueNumber}`;
+    const evidence = state.evidence.map(item => boundedMarkdown(
       `- **${item.stage}**: ${neutralizeClosingKeywords(item.summary)}\n  ` +
-      `[Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`).join('\n');
-    const decisions = activeDecisions(state).map(item => {
+      `[Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`,
+      1400, `[Full report and evidence](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`,
+    )).join('\n');
+    const active = activeDecisions(state);
+    const decisionSummaryBudget = active.length ? Math.floor(22_000 / active.length) : 1400;
+    const decisions = active.map(item => {
       const grant = state.plan!.policy?.decisionGrants?.find(candidate => candidate.id === item.grantId);
       const option = grant?.options.find(candidate => candidate.id === item.optionId);
       const choice = grant && option ? `${grant.question}: ${option.description}` : `${item.grantId}/${item.optionId}`;
-      return `- **${neutralizeClosingKeywords(item.grantId)} / ${neutralizeClosingKeywords(item.optionId)}: ` +
+      const summary = `- **${neutralizeClosingKeywords(item.grantId)} / ${neutralizeClosingKeywords(item.optionId)}: ` +
         `${neutralizeClosingKeywords(choice)}**: ` +
         `${neutralizeClosingKeywords(item.rationale)}\n  ` +
         `Evidence: ${item.evidence.map(neutralizeClosingKeywords).join('; ')}. ` +
         `[Decision run ${item.job.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.job.runId})`;
+      return boundedMarkdown(summary, Math.min(1400, decisionSummaryBudget),
+        `[Full decision rationale and evidence in the issue timeline](${issueUrl})`);
     }).join('\n');
     if (!pullNumber) {
       const configuration = neutralizeClosingKeywords(JSON.stringify({
         SDLC_MODEL: this.model,
         SDLC_AIC_CREDIT_LIMIT: this.policy.maxJobCredits,
       }, null, 2));
+      const plan = boundedMarkdown(neutralizeClosingKeywords(state.plan!.body), 18_000,
+        `[Full approved plan and approval record](${issueUrl})`);
+      const body = `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${plan}\n\n` +
+        `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
+        `## Delegated decisions\n\n${decisions || 'None'}\n\n` +
+        `Full decision rationale and evidence are recorded in the [issue timeline](${issueUrl}).\n\n` +
+        `Reviewed commit: \`${state.headSha}\`.\n\n## Cost\n\n` +
+        `Configuration at PR creation:\n\n\`\`\`json\n${configuration}\n\`\`\`\n\n` +
+        'The model setting is a configured selector, not a resolved per-run model. ' +
+        'The credit limit applies separately to each inference job, not each turn; earlier runs may have used different settings.\n\n' +
+        `**Observed agent models:** ${formatObservedModels(state.spend.models)}.\n\n` +
+        'From available primary-agent token-usage telemetry only. Multiple models may be observed, including with auto selection. ' +
+        'Missing/legacy runs and separate detection inference are not covered; this is not a billing breakdown.\n\n' +
+        `Cost snapshot at PR creation. [Lifecycle status](${issueUrl}) ` +
+        'tracks later cost settlement.\n\n' +
+        (state.pendingCosts?.length ? `**Pending cost collection:** ${state.pendingCosts.length} job(s) are excluded from these totals.\n\n` : '') +
+        (state.spend.historyComplete ? '' :
+          '**Partial cost history:** earlier costs unavailable. Totals cover recorded runs only.\n\n') +
+        `${(state.spend.runnerMs / 60_000).toFixed(1)} runner minutes and ` +
+        `${state.spend.credits.toFixed(1)} AI credits across ${state.spend.runs} runs, ` +
+        `including retries, repairs, and superseded plans. ` +
+        `${state.spend.nearLimit} run(s) finished near the per-job credit limit; ` +
+        `${state.spend.preempted} were pre-empted by it.\n\n## Evidence\n\n${evidence}\n\n` +
+        'Agent reviews are advisory. A human must review and merge this PR. No automatic merge is enabled.';
+      if (Buffer.byteLength(body, 'utf8') > 60_000) {
+        throw new Error('Rendered pull request body exceeds its safe publication budget');
+      }
       pullNumber = (await this.api.pulls.create({ ...this.scope, head: state.branch, base: state.baseBranch, draft: false,
         title: `[Agentic SDLC] ${(await this.issue(state.issueNumber)).title}`.slice(0, 200),
-        body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${neutralizeClosingKeywords(state.plan!.body)}\n\n` +
-          `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
-          `## Delegated decisions\n\n${decisions || 'None'}\n\n` +
-          `Reviewed commit: \`${state.headSha}\`.\n\n## Cost\n\n` +
-          `Configuration at PR creation:\n\n\`\`\`json\n${configuration}\n\`\`\`\n\n` +
-          'The model setting is a configured selector, not a resolved per-run model. ' +
-          'The credit limit applies separately to each inference job, not each turn; earlier runs may have used different settings.\n\n' +
-          `**Observed agent models:** ${formatObservedModels(state.spend.models)}.\n\n` +
-          'From available primary-agent token-usage telemetry only. Multiple models may be observed, including with auto selection. ' +
-          'Missing/legacy runs and separate detection inference are not covered; this is not a billing breakdown.\n\n' +
-          `Cost snapshot at PR creation. [Lifecycle status](https://github.com/${this.scope.owner}/${this.scope.repo}/issues/${state.issueNumber}) ` +
-          'tracks later cost settlement.\n\n' +
-          (state.pendingCosts?.length ? `**Pending cost collection:** ${state.pendingCosts.length} job(s) are excluded from these totals.\n\n` : '') +
-          (state.spend.historyComplete ? '' :
-            '**Partial cost history:** earlier costs unavailable. Totals cover recorded runs only.\n\n') +
-          `${(state.spend.runnerMs / 60_000).toFixed(1)} runner minutes and ` +
-          `${state.spend.credits.toFixed(1)} AI credits across ${state.spend.runs} runs, ` +
-          `including retries, repairs, and superseded plans. ` +
-          `${state.spend.nearLimit} run(s) finished near the per-job credit limit; ` +
-          `${state.spend.preempted} were pre-empted by it.\n\n## Evidence\n\n${evidence}\n\n` +
-          'Agent reviews are advisory. A human must review and merge this PR. No automatic merge is enabled.',
+        body,
       })).data.number;
     }
     const reviewMarker = `<!-- sdlc:review:${state.headSha} -->`;
