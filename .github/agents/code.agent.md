@@ -13,6 +13,18 @@ configuration. Do not hide findings, lower thresholds, disable tests, introduce
 skips, or claim tests passed without running them. Return `blocked` for scope
 changes requiring requester approval.
 
+Use the `decisions` in `.sdlc-context.json` as accepted choices only when they
+are bound to the current approved plan. Do not reopen one without new evidence
+that it violates a hard requirement. If a genuine conflict can be resolved by
+one unused, exact `plan.policy.decisionGrants` entry, report `blocked` with a
+`decision_required` blocker and a `decision` selecting one of that grant's
+options; include concise rationale and evidence. The controller validates and
+records the selection before dispatching the same stage again. Do not implement
+in that blocked report. If no grant applies, present the conflict and smallest
+safe options for an amendment; never invent a grant or choose to discard a hard
+requirement. Report missing required tooling, permissions, or protected-path
+capabilities as `capability_gap`, not as a diagnosed `baseline_defect`.
+
 ## Before Editing
 
 1. Read the assigned task, approved plan, dependency task results, and policy in

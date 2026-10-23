@@ -6,7 +6,7 @@ import { isProtectedPath, isTestPath, mergeSnapshots, validateChanges } from './
 import { assertIntegration } from './recovery.ts';
 import { validateDependencyChanges } from './dependencies.ts';
 import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
-import { assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
+import { activeDecisions, assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
 
 export function workerFile(job: Pick<Job, 'stage'>): string {
@@ -493,6 +493,16 @@ export class GitHub implements Platform {
     const evidence = state.evidence.map(item =>
       `- **${item.stage}**: ${neutralizeClosingKeywords(item.summary)}\n  ` +
       `[Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`).join('\n');
+    const decisions = activeDecisions(state).map(item => {
+      const grant = state.plan!.policy?.decisionGrants?.find(candidate => candidate.id === item.grantId);
+      const option = grant?.options.find(candidate => candidate.id === item.optionId);
+      const choice = grant && option ? `${grant.question}: ${option.description}` : `${item.grantId}/${item.optionId}`;
+      return `- **${neutralizeClosingKeywords(item.grantId)} / ${neutralizeClosingKeywords(item.optionId)}: ` +
+        `${neutralizeClosingKeywords(choice)}**: ` +
+        `${neutralizeClosingKeywords(item.rationale)}\n  ` +
+        `Evidence: ${item.evidence.map(neutralizeClosingKeywords).join('; ')}. ` +
+        `[Decision run ${item.job.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.job.runId})`;
+    }).join('\n');
     if (!pullNumber) {
       const configuration = neutralizeClosingKeywords(JSON.stringify({
         SDLC_MODEL: this.model,
@@ -502,6 +512,7 @@ export class GitHub implements Platform {
         title: `[Agentic SDLC] ${(await this.issue(state.issueNumber)).title}`.slice(0, 200),
         body: `${marker}\nCloses #${state.issueNumber}\n\n## Approved plan\n\n${neutralizeClosingKeywords(state.plan!.body)}\n\n` +
           `Approved by @${state.approval!.actor}. Plan hash: \`${state.plan!.hash}\`.\n\n` +
+          `## Delegated decisions\n\n${decisions || 'None'}\n\n` +
           `Reviewed commit: \`${state.headSha}\`.\n\n## Cost\n\n` +
           `Configuration at PR creation:\n\n\`\`\`json\n${configuration}\n\`\`\`\n\n` +
           'The model setting is a configured selector, not a resolved per-run model. ' +

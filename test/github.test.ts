@@ -707,9 +707,17 @@ test('an unrelated pull request found by pagination blocks publication', async (
 test('final PR, advisory review, and commit check are idempotent and reference the reviewed SHA', async () => {
   const state = publishable();
   state.spend.models = ['claude-sonnet-4.6', 'gpt-5.4'];
-  state.plan = makePlan('Approved plan. Fixes #455.', 0);
+  state.plan = makePlan('Approved plan. Fixes #455.', 0, { allowTaskSplits: false, vendorSecurityPatches: [], dependencies: [],
+    decisionGrants: [{ id: 'DEC-001', question: 'Select an adapter',
+      options: [{ id: 'adapter-a', description: 'Existing adapter' }, { id: 'adapter-b', description: 'Fallback adapter' }],
+      selectionCriteria: ['Prefer existing use'] }] });
   state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
     authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
+  state.decisionHistory = [{ grantId: 'DEC-001', optionId: 'adapter-a',
+    rationale: 'Existing code already uses the adapter', evidence: ['src/client.ts imports adapter-a'],
+    job: { id: '123-1', stage: 'code', inputSha: baseSha, controlSha: baseSha, planHash: state.plan.hash,
+      createdAt: '2026-09-08T12:00:00Z', runId: 77, taskId: 'feature', attempt: 1 },
+    decidedAt: '2026-09-08T12:05:00Z' }];
   state.evidence = ['scan', 'security', 'test', 'validate', 'document', 'review'].map(stage => ({
     stage: stage as 'scan' | 'security' | 'test' | 'validate' | 'review', sha: newSha,
     jobId: `123-${stage}`, runId: 1, summary: 'Verified. Closes owner/repo#456.',
@@ -741,6 +749,11 @@ test('final PR, advisory review, and commit check are idempotent and reference t
   }));
   assert.equal(await github.publish(state), 126);
   const snapshot = String(pulls[0]!.body);
+  assert.match(snapshot, /## Delegated decisions/);
+  assert.match(snapshot, /DEC-001.*adapter-a/);
+  assert.match(snapshot, /Select an adapter: Existing adapter/);
+  assert.match(snapshot, /Existing code already uses the adapter/);
+  assert.match(snapshot, /Decision run 77/);
   delete state.pendingCosts;
   state.spend.credits += 42;
   state.spend.models.push('later-observed-model');

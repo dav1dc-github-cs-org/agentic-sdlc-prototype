@@ -777,6 +777,8 @@ attempt fingerprints before another job is dispatched.
 | `candidate_defect` | Targeted coding repair within both repair and attempt budgets |
 | `incomplete_work` | Continue the original registered stage, or execute an explicitly permitted acceptance-preserving coding split |
 | `approval_conflict` | Prepare an amendment only for an already approved plan when no ready work or pending amendment prevents it and the trusted head is current; otherwise wait for a decision |
+| `decision_required` | Use an exact unused option only when the approved plan contains a matching grant; otherwise use the human amendment path |
+| `capability_gap` | Wait for a maintainer prerequisite; do not treat protected paths or missing tools as baseline defects or dispatch maintenance |
 | `baseline_defect` | Prepare a separate maintainer patch for the exact diagnosed files |
 | `unsafe_output` | Reject without applying changes or bypassing a gate |
 
@@ -790,7 +792,7 @@ avoid sharing one retry counter between unrelated work. History has at most
 40 recovery records and 40 amendment decisions. Only one current draft is kept,
 limited to 300 KB of serialized changes; lifecycle writes are capped at 1 MB.
 
-A task-local decision or exhausted automatic recovery marks that task unavailable
+A task-local blocker or exhausted automatic recovery marks that task unavailable
 and allows another dependency-ready task to run. Its dependents stay unavailable.
 Automatic retries and incomplete-work continuations resume their registered stage,
 not always coding. Repository-wide trust or baseline failures stop feature work.
@@ -804,6 +806,33 @@ Baseline-test immutability is separate from protected-path drift. Tests present 
 `isProtectedPath`. An upstream change to an unprotected baseline test does not
 alone trigger trusted-revision blocking. Adopting that workflow revision between
 jobs does not incorporate the change into the feature or replace its baseline.
+
+### Bounded Delegated Decisions
+
+Research may propose up to ten `plan.policy.decisionGrants` in a plan. Each grant
+defines a question, two to six exact option IDs, selection criteria, and optional
+requirement IDs. The requester or a repository writer must approve the plan
+before any grant is usable. Grants authorize only the listed choice, not code
+changes, scope expansion, plan approval, or gate waivers.
+
+A worker can return a decision only with a `decision_required` blocker, an exact
+grant ID and option ID, a rationale, and observable evidence. The controller
+accepts it only from a registered post-approval job bound to the still-current
+plan; when requirement IDs are specified, the job's task must cover all of them.
+Each grant can be resolved once per plan. The controller persists the decision
+with its source, workflow, plan, run, and job identity, invalidates all prior gate
+evidence, and resumes the same stage with current-plan decisions in context.
+The final PR records the choice, rationale, evidence, and run link. A revised
+plan does not inherit old decisions.
+
+This route is for small, reversible ambiguity, not contradictory hard
+requirements or missing authorization. An ungranted, invalid, or already-used
+choice follows the normal amendment path; before the first plan approval, use
+`/sdlc revise`. A `capability_gap` is different: the controller waits for a
+maintainer to supply the required tooling, permission, or protected-path access.
+It is never reclassified as a baseline defect based on its paths and never
+enables the maintenance worker. After the prerequisite is available, explicitly
+amend or revise the plan to restart affected work.
 
 ### Scoped Amendments
 
@@ -820,8 +849,9 @@ repair permissions, dependency declarations, and a hash covering all of them.
 Approve with `/sdlc approve-amendment vN`, or reject with
 `/sdlc reject-amendment vN`. The requester or a writer may decide ordinary scope
 changes. A writer is required for a trusted-baseline change, a baseline-repair
-recovery, or an explicit integration resolution. Approval checks the exact
-source, target baseline, workflow revision, issue snapshot, and proposal version.
+recovery, an unresolved maintainer prerequisite, or an explicit integration
+resolution. Approval checks the exact source, target baseline, workflow revision,
+issue snapshot, and proposal version.
 A moved baseline or changed issue needs a fresh `/sdlc amend ...`; this replaces
 the stale proposal with a higher version without losing source. Rejection does
 not reset budgets or grant a legacy retry path.

@@ -34,8 +34,35 @@ export const planPolicySchema = z.object({
   vendorSecurityPatches: z.array(text.max(240)).max(30),
   dependencies: z.array(dependencySchema).max(6),
   requirements: z.array(z.object({ id: z.string().regex(/^REQ-\d{3}$/), text: text.max(1000) }).strict()).max(100).optional(),
+  decisionGrants: z.array(z.object({
+    id: z.string().regex(/^DEC-\d{3}$/),
+    question: text.max(1000),
+    options: z.array(z.object({ id: taskIdSchema, description: text.max(1000) }).strict()).min(2).max(6),
+    selectionCriteria: z.array(text.max(500)).min(1).max(6),
+    requirementIds: z.array(z.string().regex(/^REQ-\d{3}$/)).max(20).optional(),
+  }).strict()).max(10).optional(),
   integrationResolutions: z.array(integrationResolutionSchema).max(10).optional(),
-}).strict().refine(policy => JSON.stringify(policy).length <= 16000, 'Plan permission budget exceeded');
+}).strict().superRefine((policy, context) => {
+  if (JSON.stringify(policy).length > 16000) context.addIssue({ code: 'custom', message: 'Plan permission budget exceeded' });
+  const grants = policy.decisionGrants ?? [];
+  if (new Set(grants.map(grant => grant.id)).size !== grants.length) {
+    context.addIssue({ code: 'custom', path: ['decisionGrants'], message: 'Decision grant IDs must be unique' });
+  }
+  for (const [index, grant] of grants.entries()) {
+    if (new Set(grant.options.map(option => option.id)).size !== grant.options.length) {
+      context.addIssue({ code: 'custom', path: ['decisionGrants', index, 'options'], message: 'Decision option IDs must be unique' });
+    }
+    if (grant.requirementIds && (!policy.requirements ||
+        grant.requirementIds.some(id => !policy.requirements!.some(requirement => requirement.id === id)))) {
+      context.addIssue({ code: 'custom', path: ['decisionGrants', index, 'requirementIds'],
+        message: 'Decision grants must reference declared requirements' });
+    }
+    if (grant.requirementIds && new Set(grant.requirementIds).size !== grant.requirementIds.length) {
+      context.addIssue({ code: 'custom', path: ['decisionGrants', index, 'requirementIds'],
+        message: 'Decision grant requirement IDs must be unique' });
+    }
+  }
+});
 export type PlanPolicy = z.infer<typeof planPolicySchema>;
 export const planSchema = z.object({ version: numberSchema, body: text.max(24000), hash: hashSchema,
   policy: planPolicySchema.optional() }).strict();
@@ -90,7 +117,8 @@ export const costSchema = z.object({
 export type Cost = z.infer<typeof costSchema>;
 
 export const blockerSchema = z.object({
-  category: z.enum(['transient', 'candidate_defect', 'incomplete_work', 'approval_conflict', 'baseline_defect', 'unsafe_output']),
+  category: z.enum(['transient', 'candidate_defect', 'incomplete_work', 'approval_conflict', 'decision_required',
+    'capability_gap', 'baseline_defect', 'unsafe_output']),
   scope: z.enum(['task', 'repository']),
   paths: z.array(text.max(240)).max(30),
   constraint: text.max(2000),
@@ -104,6 +132,13 @@ export const blockerSchema = z.object({
   remedies: z.array(text.max(1000)).min(1).max(6),
 }).strict();
 export type Blocker = z.infer<typeof blockerSchema>;
+export const delegatedDecisionSchema = z.object({
+  grantId: z.string().regex(/^DEC-\d{3}$/),
+  optionId: taskIdSchema,
+  rationale: text.max(2000),
+  evidence: z.array(text.max(1000)).min(1).max(6),
+}).strict();
+export type DelegatedDecision = z.infer<typeof delegatedDecisionSchema>;
 
 const reportObjectSchema = z.object({
   jobId: z.string().regex(/^\d+-\d+$/),
@@ -111,6 +146,7 @@ const reportObjectSchema = z.object({
   outcome: z.enum(['pass', 'changes_requested', 'blocked']),
   summary: text.max(12000),
   blocker: blockerSchema.optional(),
+  decision: delegatedDecisionSchema.optional(),
   plan: text.max(24000).optional(),
   planPolicy: planPolicySchema.optional(),
   split: z.array(stepSchema).min(2).max(12).optional(),
@@ -122,7 +158,12 @@ const reportObjectSchema = z.object({
 export const workerReportSchema = reportObjectSchema.omit({ jobId: true, inputSha: true, changes: true });
 export const reportSchema = reportObjectSchema.refine(report => report.outcome !== 'pass' || report.blocker === undefined,
   'Passing reports cannot contain unresolved blockers').refine(report => report.split === undefined ||
-    report.outcome === 'blocked' && report.blocker?.category === 'incomplete_work', 'Splits require an incomplete-work blocker');
+    report.outcome === 'blocked' && report.blocker?.category === 'incomplete_work', 'Splits require an incomplete-work blocker')
+  .refine(report => report.decision === undefined ||
+    report.outcome === 'blocked' && report.blocker?.category === 'decision_required',
+  'Delegated decisions require a blocked report with a decision-required blocker')
+  .refine(report => report.decision === undefined || report.changes.length === 0,
+    'Delegated decisions cannot include code or test changes');
 export type Report = z.infer<typeof reportSchema>;
 
 export const policySchema = z.object({
@@ -202,7 +243,7 @@ const jobIdentitySchema = jobSchema.pick({ id: true, stage: true, inputSha: true
 export const recoverySchema = z.object({
   id: jobSchema.shape.id, fingerprint: hashSchema, job: jobIdentitySchema,
   blocker: blockerSchema,
-  action: z.enum(['retry', 'repair', 'continue', 'split', 'amend', 'maintain', 'reject']),
+  action: z.enum(['retry', 'repair', 'continue', 'split', 'amend', 'maintain', 'prerequisite', 'reject']),
   status: z.enum(['active', 'waiting_approval', 'waiting_maintainer', 'exhausted', 'rejected', 'resolved']),
   resumePhase: phaseSchema,
   attempts: z.number().int().min(0).max(100),
@@ -240,6 +281,11 @@ const amendmentDecisionSchema = z.object({ version: numberSchema, sourceSha: sha
   controlSha: shaSchema, planHash: hashSchema.optional(), decision: z.enum(['approved', 'rejected']),
   actor: text.max(100), commentId: numberSchema, at: z.iso.datetime() }).strict();
 export type AmendmentDecision = z.infer<typeof amendmentDecisionSchema>;
+const delegatedDecisionRecordSchema = z.object({
+  grantId: z.string().regex(/^DEC-\d{3}$/), optionId: taskIdSchema,
+  rationale: text.max(2000), evidence: z.array(text.max(1000)).min(1).max(6),
+  job: jobIdentitySchema, decidedAt: z.iso.datetime(),
+}).strict().refine(record => record.job.planHash !== null, 'Delegated decisions require an approved plan binding');
 
 export const lifecycleSchema = z.object({
   schemaVersion: z.literal(2), issueNumber: numberSchema,
@@ -287,6 +333,9 @@ export const lifecycleSchema = z.object({
     patchedSha256: hashSchema, planHash: hashSchema, jobId: jobSchema.shape.id, inputSha: shaSchema, outputSha: shaSchema }).strict()).max(30).optional(),
   amendment: amendmentSchema.optional(),
   amendmentHistory: z.array(amendmentDecisionSchema).max(40).optional(),
+  decisionHistory: z.array(delegatedDecisionRecordSchema).max(100).refine(items =>
+    new Set(items.map(item => `${item.job.planHash}:${item.grantId}`)).size === items.length,
+  'Duplicate delegated decision for plan grant').optional(),
   planVersion: numberSchema.optional(),
   preflight: z.object({ kind: z.enum(['baseline', 'dependencies', 'installed']), sourceSha: shaSchema,
     resumePhase: z.enum(['researching', 'awaiting_approval', 'awaiting_amendment', 'decomposing']) }).strict().optional(),
@@ -301,7 +350,8 @@ const storedLifecycleSchema = z.discriminatedUnion('schemaVersion', [
   lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional(), pendingCosts: z.never().optional(),
     usageHistory: z.never().optional(), recoveries: z.never().optional(), retryAt: z.never().optional(),
     dependencyChoices: z.never().optional(), dependencyPatches: z.never().optional(),
-    amendment: z.never().optional(), amendmentHistory: z.never().optional(), preflight: z.never().optional(), vendorRepair: z.never().optional(),
+    amendment: z.never().optional(), amendmentHistory: z.never().optional(), decisionHistory: z.never().optional(),
+    preflight: z.never().optional(), vendorRepair: z.never().optional(),
     maintenanceRecovery: z.never().optional(), planVersion: z.never().optional() }),
 ]);
 

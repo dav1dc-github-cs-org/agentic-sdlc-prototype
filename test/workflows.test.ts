@@ -45,6 +45,8 @@ test('generated agents have no publishing credentials or direct write permission
   assert.equal(source.includes('SDLC_APP_PRIVATE_KEY'), false);
   assert.equal(source.includes('create-github-app-token'), false);
   assert.equal(source.includes('create-pull-request:'), false);
+  assert.match(source, /plan\.policy\.decisionGrants/);
+  assert.match(source, /capability_gap/);
   const compiled = read('sdlc-agent.lock.yml');
   assert.equal(compiled.jobs.agent.permissions.contents, 'read');
   const mutationScopes = ['contents', 'issues', 'pull-requests', 'checks', 'deployments', 'packages', 'security-events'];

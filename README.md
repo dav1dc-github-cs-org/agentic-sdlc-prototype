@@ -25,6 +25,8 @@ flowchart TD
   tasks -->|"All tasks retained complete"| scans[CodeQL, dependency audit, secret scan]
   coding -->|"More ready tasks or steps"| coding
   coding -->|"All tasks complete"| scans
+  coding -->|"Small reversible ambiguity with an approved grant"| delegated[Record granted decision and resume stage]
+  delegated -->|"Invalidate old evidence"| coding
   scans --> security[Independent security agent]
   security --> testing[Independent testing agent]
   testing -->|Tests changed| scans
@@ -113,6 +115,16 @@ requester or a repository writer can approve that exact version with a new comme
 /sdlc approve v1
 ```
 
+Research may include up to ten `plan.policy.decisionGrants` in the proposed
+plan. Each grant names a bounded question, two to six options, selection
+criteria, and optionally the requirement IDs it applies to. Approval binds
+those grants to the plan hash. A worker may select an exact option only for a
+small, reversible ambiguity; the controller records its rationale and evidence,
+binds the decision to the registered job and plan, invalidates prior gate
+evidence, and resumes that stage. Requirement-scoped grants are accepted only
+for a registered task covering those requirements. A hard-requirement conflict,
+missing grant, or already-used grant still needs a human amendment or revision.
+
 To change the approach, post a new comment:
 
 ```text
@@ -128,7 +140,7 @@ planning stops execution until the request is replanned.
 | --- | --- | --- |
 | `/sdlc approve vN` | Requester or writer | Approve the current plan |
 | `/sdlc revise <feedback>` | Requester or writer | Replan; require approval |
-| `/sdlc amend <feedback>` | Requester or writer; writer for trusted-baseline changes | Propose a source-preserving amendment to an already approved plan |
+| `/sdlc amend <feedback>` | Requester or writer; writer for trusted-baseline changes or unresolved maintainer prerequisites | Propose a source-preserving amendment to an already approved plan |
 | `/sdlc approve-amendment vN` | Requester or writer; writer when specified | Approve the exact amendment and integration |
 | `/sdlc reject-amendment vN` | Same required authority | Reject without discarding source |
 | `/sdlc propose-maintenance JOB HASH` | Repository writer | Explicitly publish the exact baseline repair as a draft PR |
@@ -143,11 +155,19 @@ feature PR exists, use normal PR review; issue commands no longer restart it.
 ## Recovery
 
 Structured blockers distinguish temporary failures, candidate defects, incomplete
-work, approval conflicts, baseline defects, and unsafe output. The controller
-verifies path authority, records attempted remedies, and uses bounded backoff,
-targeted repair, checkpoint continuation, or an explicit approval path. Unrelated
+work, approval conflicts, baseline defects, capability gaps, decision requests,
+and unsafe output. The controller verifies path authority, records attempted
+remedies, and uses bounded backoff, targeted repair, checkpoint continuation,
+an approved delegated decision, or an explicit human approval path. Unrelated
 ready tasks can continue after a task-local block, but not a repository-wide
 trust failure. Repeated identical deterministic repairs stop spending budget.
+
+A `capability_gap` means a required tool, permission, or protected-path access
+is unavailable. It remains a maintainer prerequisite even if the report names
+protected files; it is never converted into a trusted-baseline repair. After a
+maintainer supplies the prerequisite, use `/sdlc amend ...` or `/sdlc revise ...`
+as appropriate. This avoids asking an agent to repair the controller or its
+trusted harness.
 
 Workers use the same path checker as publication. Their context names the actual
 immutable baseline tests, and `node control/src/worker.ts check <path>...` checks
@@ -231,11 +251,12 @@ totals unchanged. Older strict readers cannot load records containing this
 extension, so deployment and rollback must retain support for it.
 
 Recovery adds optional version-2 records for blockers, drafts, amendments,
-preflight, dependency choices and patches, and execution-step bindings. Existing
-records load without retroactive permissions or backfill. Deploy all controller,
-worker, policy, profile, and generated workflow changes together after draining
-old runs. Older strict readers cannot read these extensions. No live state or
-repository settings are changed by local implementation or tests.
+delegated decisions, preflight, dependency choices and patches, and execution-step
+bindings. Existing records load without retroactive permissions or backfill.
+Deploy all controller, worker, policy, profile, and generated workflow changes
+together after draining old runs. Older strict readers cannot read these
+extensions. No live state or repository settings are changed by local
+implementation or tests.
 
 Workers receive read-only repository credentials. They return reports and text
 changes as artifacts. The separate controller validates paths, sizes, stage

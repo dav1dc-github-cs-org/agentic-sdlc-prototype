@@ -236,6 +236,25 @@ async function coding() {
   return context;
 }
 
+async function codingWithDecisionGrant() {
+  const platform = new FakePlatform();
+  const controller = new Controller(platform, policy);
+  await controller.tick(123, intake(platform));
+  platform.finish({ plan: 'Implement the feature using a compatible adapter.',
+    planPolicy: { allowTaskSplits: false, vendorSecurityPatches: [], dependencies: [],
+      decisionGrants: [{ id: 'DEC-001', question: 'Which compatible adapter should be used?',
+        options: [{ id: 'adapter-a', description: 'Use the existing adapter' },
+          { id: 'adapter-b', description: 'Use the fallback adapter' }],
+        selectionCriteria: ['Prefer the adapter already used by adjacent code'] }] } });
+  await controller.tick(123);
+  platform.reply('/sdlc approve v1');
+  await controller.tick(123);
+  platform.finish({ tasks: [{ id: 'feature', title: 'Feature', description: 'Implement the feature',
+    acceptance: ['The adapter works'], dependsOn: [] }] });
+  await controller.tick(123);
+  return { platform, controller };
+}
+
 test('controller routes verified recovery and rejects unchanged retries without granting new authority', async () => {
   const { platform, controller } = await coding();
   const blocker = { category: 'baseline_defect' as const, scope: 'task' as const, paths: ['test/feature/new.test.ts'],
@@ -254,6 +273,50 @@ test('controller routes verified recovery and rejects unchanged retries without 
   assert.equal(platform.dispatched.length, dispatched);
   assert.match(platform.outputs.get('comment:2')!, /retry cannot change its authority/);
   assert.equal(platform.stored!.state.recoveries![0]!.attempts, 1);
+});
+
+test('controller accepts an exact approved decision, persists it, and resumes with old evidence invalidated', async () => {
+  const { platform, controller } = await codingWithDecisionGrant();
+  const job = platform.stored!.state.job!;
+  assert.equal(job.stage, 'code');
+  platform.patch(state => {
+    state.evidence = [{ stage: 'scan', sha: state.headSha, jobId: 'older-job', runId: 99, summary: 'Previously passed' }];
+  });
+  platform.finish({ outcome: 'blocked', summary: 'Adapter selection is ambiguous',
+    blocker: { category: 'decision_required', scope: 'task', paths: [], constraint: 'Choose an adapter',
+      diagnostics: [], remedies: ['Select a compatible option'] },
+    decision: { grantId: 'DEC-001', optionId: 'adapter-a', rationale: 'Adjacent code already uses this API',
+      evidence: ['src/client.ts imports the same adapter'] } });
+  await controller.tick(123);
+
+  const state = platform.stored!.state;
+  assert.equal(state.phase, 'coding');
+  assert.equal(state.job!.stage, 'code');
+  assert.equal(state.decisionHistory!.length, 1);
+  assert.equal(state.decisionHistory![0]!.grantId, 'DEC-001');
+  assert.equal(state.decisionHistory![0]!.optionId, 'adapter-a');
+  assert.equal(state.decisionHistory![0]!.job.id, job.id);
+  assert.equal(state.evidence.length, 0);
+  assert.equal(platform.dispatched.at(-1)!.stage, 'code');
+  assert.match(platform.outputs.get(`decision:${job.id}`)!, /Bound to plan/);
+});
+
+test('controller rejects a decision option that the approved grant did not authorize', async () => {
+  const { platform, controller } = await codingWithDecisionGrant();
+  const job = platform.stored!.state.job!;
+  platform.finish({ outcome: 'blocked', summary: 'No approved option applies',
+    blocker: { category: 'decision_required', scope: 'task', paths: [], constraint: 'Choose an adapter',
+      diagnostics: [], remedies: ['Amend the approved plan'] },
+    decision: { grantId: 'DEC-001', optionId: 'adapter-c', rationale: 'A third adapter appears useful',
+      evidence: ['A new package was found'] } });
+  await controller.tick(123);
+  const state = platform.stored!.state;
+  assert.equal(state.decisionHistory, undefined);
+  assert.equal(state.phase, 'amending');
+  assert.equal(state.job!.purpose, 'amendment');
+  assert.ok(platform.outputs.get(`recovery:${state.recoveries![0]!.id}`));
+  assert.equal(state.recoveries![0]!.blocker.category, 'decision_required');
+  assert.equal(job.stage, 'code');
 });
 
 test('structured transient recovery waits with bounded backoff before dispatching again', async () => {

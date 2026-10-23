@@ -42,11 +42,17 @@ acceptance criteria, and the approved plan in `.sdlc-context.json`.
 	never make live writes or depend on production credentials.
 6. **Ambiguity and gaps**: Missing test cases alone are not a blocker when
 	expected behavior is established. If an unspecified rule changes correctness,
-	such as whether an out-of-range action stops, wraps, or errors, identify the
-	competing interpretations and ask a precise question instead of guessing.
-	Conflicts between the plan, request, or contracts require clarification, not
-	silently changing scope. Material product ambiguity should be resolved by
-	Research and human approval before implementation continues.
+	such as whether an out-of-range action stops, wraps, or errors, first check
+	the current plan-bound `decisions` and unused `decisionGrants`. For an exact
+	grant, return `blocked` with a `decision_required` blocker and select one
+	approved option using its criteria; include rationale and observable
+	evidence. The controller records the choice and resumes Testing. Do not add
+	test changes in the same report. Do not reopen a recorded decision without
+	new evidence of a hard-requirement violation. Without an applicable grant,
+	identify the competing interpretations and ask for a scoped amendment rather
+	than guessing. Conflicts between hard requirements require human approval.
+	Report missing required tooling, permissions, or protected-path capabilities
+	as `capability_gap`, not as a diagnosed `baseline_defect`.
 
 ## Assertions and Execution
 
@@ -111,4 +117,3 @@ Use the existing report contract and include these sections in `summary`:
 
 Keep the summary within the existing 12,000-character limit. Prefer concise
 reproductions and actionable gaps over raw logs; do not omit unfinished work.
-

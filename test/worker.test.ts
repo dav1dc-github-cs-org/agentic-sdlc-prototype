@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { policySchema } from '../src/contracts.ts';
-import { createLifecycle, startJob } from '../src/lifecycle.ts';
+import { createLifecycle, executionHash, startJob } from '../src/lifecycle.ts';
 import { approvePlan, digest, makePlan } from '../src/domain.ts';
 import { describeCapabilities } from '../src/changes.ts';
 import { beginAmendment, decideAmendment, routeRecovery } from '../src/recovery.ts';
@@ -58,12 +58,21 @@ test('prepare entry point loads and validates the registered job before writing 
   const preload = join(directory, 'mock-fetch.mjs');
   const sourceSha = 'a'.repeat(40);
   const state = createLifecycle(123, 'requester', 'Feature', sourceSha);
-  state.plan = makePlan('Approved plan', 0);
+  state.plan = makePlan('Approved plan', 0, { allowTaskSplits: false, vendorSecurityPatches: [], dependencies: [],
+    decisionGrants: [{ id: 'DEC-001', question: 'Select an adapter',
+      options: [{ id: 'adapter-a', description: 'Existing adapter' }, { id: 'adapter-b', description: 'Fallback adapter' }],
+      selectionCriteria: ['Prefer existing use'] }] });
   state.approval = approvePlan({ phase: 'awaiting_approval', plan: state.plan, version: 1,
     authorized: true, actor: 'requester', commentId: 1, at: '2026-09-08T12:00:00Z' });
   state.phase = 'coding';
   state.feedback = 'Repair';
   const job = startJob(state, 'code', '2026-09-08T12:00:00Z');
+  state.decisionHistory = [{ grantId: 'DEC-001', optionId: 'adapter-a', rationale: 'Adjacent code uses this adapter',
+    evidence: ['src/client.ts imports adapter-a'],
+    job: { id: '123-0', stage: 'code', inputSha: sourceSha, controlSha: sourceSha, planHash: state.plan!.hash,
+      createdAt: '2026-09-08T11:00:00Z', runId: 12 }, decidedAt: '2026-09-08T11:05:00Z' }];
+  job.executionHash = executionHash(state);
+  const decisions = structuredClone(state.decisionHistory);
   writeFileSync(preload, `
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
@@ -101,7 +110,8 @@ globalThis.fetch = async (input, init) => {
     const valid = execute('valid', state);
     assert.equal(valid.result.status, 0, valid.result.stderr);
     const capabilities = describeCapabilities('code', policy, ['test/existing.test.ts']);
-    assert.deepEqual(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-context.json'), 'utf8')), { state, policy, capabilities });
+    assert.deepEqual(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-context.json'), 'utf8')),
+      { state, policy, capabilities, decisions });
     assert.equal(readFileSync(valid.output, 'utf8'), `base_sha=${state.baseSha}\nscan_sha=${state.headSha}\n`);
     assert.equal(JSON.parse(readFileSync(join(valid.workspace, '.sdlc-output/result.json'), 'utf8')).outcome, 'blocked');
     for (const [path, allowed] of [['test/feature/new.test.ts', true], ['test/existing.test.ts', false], ['src/controller.ts', false]] as const) {
@@ -127,23 +137,27 @@ globalThis.fetch = async (input, init) => {
     const configured = execute('configured', state, { SDLC_AIC_CREDIT_LIMIT: '500' });
     assert.equal(configured.result.status, 0, configured.result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(join(configured.workspace, '.sdlc-context.json'), 'utf8')),
-      { state, policy: { ...policy, maxJobCredits: 500 }, capabilities });
+      { state, policy: { ...policy, maxJobCredits: 500 }, capabilities, decisions });
     const invalidLimit = execute('invalid-limit', state, { SDLC_AIC_CREDIT_LIMIT: '0' });
     assert.notEqual(invalidLimit.result.status, 0);
     assert.match(invalidLimit.result.stderr, /SDLC_AIC_CREDIT_LIMIT/);
     assert.throws(() => readFileSync(join(invalidLimit.workspace, '.sdlc-context.json')), /ENOENT/);
 
-    const legacy = execute('legacy', { ...state, schemaVersion: 1, spend: undefined });
+    const legacyState = structuredClone(state);
+    delete legacyState.decisionHistory;
+    legacyState.job!.executionHash = executionHash(legacyState);
+    const legacy = execute('legacy', { ...legacyState, schemaVersion: 1 as const, spend: undefined });
     assert.equal(legacy.result.status, 0, legacy.result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(join(legacy.workspace, '.sdlc-context.json'), 'utf8')), {
-      state: { ...state, spend: { ...state.spend, historyComplete: false } }, policy, capabilities,
+      state: { ...legacyState, schemaVersion: 2, spend: { ...state.spend, historyComplete: false } },
+      policy, capabilities, decisions: [],
     });
 
     const mismatches: [string, unknown, Record<string, string>][] = [
       ['source', state, { SDLC_SOURCE_SHA: 'b'.repeat(40) }],
       ['stage', state, { SDLC_STAGE: 'security' }],
       ['approval', { ...state, approval: { ...state.approval!, planHash: 'd'.repeat(64) } }, {}],
-      ['legacy-approval', { ...state, schemaVersion: 1, spend: undefined,
+      ['legacy-approval', { ...legacyState, schemaVersion: 1 as const, spend: undefined,
         approval: { ...state.approval!, planHash: 'd'.repeat(64) } }, {}],
       ['security-approval', { ...securityState,
         approval: { ...securityState.approval!, planHash: 'd'.repeat(64) } }, { SDLC_STAGE: 'security' }],
@@ -151,7 +165,7 @@ globalThis.fetch = async (input, init) => {
     for (const [name, stored, overrides] of mismatches) {
       const rejected = execute(name, stored, overrides);
       assert.notEqual(rejected.result.status, 0);
-      assert.match(rejected.result.stderr, /registered job|approved plan/);
+      assert.match(rejected.result.stderr, /registered job|approved plan/, name);
       assert.throws(() => readFileSync(join(rejected.workspace, '.sdlc-context.json')), /ENOENT/);
       assert.throws(() => readFileSync(join(rejected.workspace, '.sdlc-output/result.json')), /ENOENT/);
     }

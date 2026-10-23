@@ -454,7 +454,11 @@ sequenceDiagram
     HwControl->>HwArtifacts: Download exactly one eligible result artifact
     HwArtifacts-->>HwControl: Untrusted result JSON
     HwControl->>HwControl: Check schema, current job, plan, source, and policy
-        alt Accepted pass result
+        alt Exact unused decision option is authorized by the current approved plan
+        HwControl->>HwState: Persist rationale and evidence with registered job and plan identity
+        HwControl->>HwState: Clear old gate evidence and resume the same stage
+        HwControl->>HwIssue: Publish the auditable decision and evidence
+        else Accepted pass result
           opt Explicitly approved integration stage
         HwControl->>HwControl: Independently recompute the approved integration tree
         HwControl->>HwBranch: Publish only the matching tree without force
@@ -672,6 +676,8 @@ flowchart TD
     RecoveryFailure["Increment consecutive infrastructure failures"]
     RecoveryRetry["Register replacement job in the same phase"]
     RecoveryFindings["Classify blocker and fingerprint attempted remedy"]
+    RecoveryDelegated["Persist exact plan-granted option with job provenance"]
+    RecoveryPrerequisite["waiting_maintainer: capability prerequisite, not baseline repair"]
     RecoveryCode["coding: apply repair feedback"]
     RecoveryReadyTask["coding: run an unrelated dependency-ready task"]
     RecoveryBlocked["blocked: inspect cause and evidence"]
@@ -708,13 +714,19 @@ flowchart TD
     RecoveryFailure -->|"Failure budget exhausted"| RecoveryBlocked
     RecoveryRetry --> RecoveryActive
     RecoveryActive -->|"Structured non-passing result"| RecoveryFindings
+    RecoveryFindings -->|"Eligible unused grant and exact option"| RecoveryDelegated
+    RecoveryDelegated -->|"Invalidate old gate evidence and resume stage"| RecoveryActive
     RecoveryFindings -->|"Permitted repair and new remedy within budget"| RecoveryCode
     RecoveryFindings -->|"Transient failure within budget"| RecoveryRetry
     RecoveryFindings -->|"Incomplete work within budget"| RecoveryContinue
     RecoveryContinue -->|"Revalidate draft and original acceptance"| RecoveryActive
     RecoveryFindings -->|"Task-local wait with unrelated ready work"| RecoveryReadyTask
+    RecoveryFindings -->|"Capability prerequisite with unrelated ready work"| RecoveryPrerequisite
+    RecoveryPrerequisite --> RecoveryReadyTask
+    RecoveryFindings -->|"Repository-wide capability prerequisite"| RecoveryPrerequisite
+    RecoveryPrerequisite -->|"No unrelated ready work"| RecoveryBlocked
     RecoveryReadyTask --> RecoveryActive
-    RecoveryFindings -->|"Eligible approval conflict after ready work finishes"| RecoveryAmend
+    RecoveryFindings -->|"Approval conflict or ungranted decision after ready work finishes"| RecoveryAmend
     RecoveryFindings -->|"Verified immutable baseline defect"| RecoveryMaintain
     RecoveryFindings -->|"Unsafe output or exhausted budget"| RecoveryBlocked
     RecoveryFindings -->|"Decision needed but no eligible automatic proposal"| RecoveryBlocked
@@ -776,10 +788,25 @@ flowchart TD
 - **Structured recovery:** verified categories route separately. Automatic retries,
   repairs, continuations and splits are bounded by fingerprint, stage, task/step,
   global jobs and repairs. Identical deterministic repairs stop without another
-  inference. Task-local decisions permit unrelated ready tasks; repository trust
+  inference. Task-local blockers permit unrelated ready tasks; repository trust
   failures do not. Retry and continuation resume the original registered stage;
   only coding repairs and approved coding steps route to coding. Invalid recovery
   payloads consume bounded worker failures.
+- **Delegated decisions:** Research may propose narrow grants in the structured
+  plan policy, but only explicit human approval makes them usable. A later worker
+  may select one exact unused option and provide rationale plus observable
+  evidence. The controller binds the durable record to the current plan and
+  registered job, includes current-plan decisions in successor context and
+  execution hashes, and clears old gate evidence before resuming the same stage.
+  Requirement-scoped grants apply only when the registered task covers every
+  listed requirement. A missing grant or hard-requirement conflict follows the
+  amendment path; decisions never approve a plan or change permissions.
+- **Capability prerequisites:** a `capability_gap` remains a maintainer wait,
+  not a baseline defect, even when paths are protected. Task-local gaps may let
+  unrelated dependency-ready work continue. After supplying the prerequisite,
+  the affected work must be amended or revised; while the maintainer
+  prerequisite remains unresolved, amendment approval requires a writer. The
+  controller does not retry automatically or dispatch maintenance for the gap.
 - **Amendments:** automatically proposed for eligible approval conflicts, never
   automatically approved. A prior approved plan is required. Automatic proposals
   start only when the lifecycle is blocked, no amendment is pending, and the
@@ -899,6 +926,7 @@ flowchart LR
 | Epic | Original request and human discussion; owns one lifecycle |
 | Plan | Versioned proposed scope; implementation needs its approval |
 | Approval | Human actor and comment bound to an exact plan hash |
+| Delegated decision | Exact approved grant option, rationale, evidence, and registered job identity; active only under its plan hash |
 | Task | Bounded work item in the approved plan's dependency graph |
 | Job | One registered attempt to execute a stage against a commit |
 | Recovery | Verified blocker, stage/task/step fingerprint, bounded attempts, optional unaccepted draft or maintainer proposal |
@@ -947,7 +975,7 @@ Existing records without these fields load unchanged; no history is inferred
 from aggregate totals. Deployment and rollback must retain the upgraded readers.
 
 Recovery extends version 2 with optional blocker/draft history, backoff,
-amendments, decisions and a monotonic `planVersion`, preflight state, dependency selections and patches,
+amendments, bounded delegated decisions and a monotonic `planVersion`, preflight state, dependency selections and patches,
 maintenance publication intent, task steps, and execution hashes. No permission
 is backfilled from legacy plan prose. New phases and stages require the upgraded
 controller, profiles and workflows together. Recovery history and draft payloads

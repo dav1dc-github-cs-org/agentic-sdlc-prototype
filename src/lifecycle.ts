@@ -1,8 +1,9 @@
 import { digest, planHash, type Approval, type Phase, type Plan } from './domain.ts';
-import type { Amendment, AmendmentDecision, Cost, Recovery, Report } from './contracts.ts';
+import type { Amendment, AmendmentDecision, Cost, DelegatedDecision, Recovery, Report } from './contracts.ts';
 import type { DependencyPatch } from './dependencies.ts';
 
 export type Stage = 'research' | 'decompose' | 'code' | 'scan' | 'security' | 'test' | 'validate' | 'document' | 'review' | 'integrate' | 'maintain';
+const delegatedDecisionStages: readonly Stage[] = ['decompose', 'code', 'security', 'test', 'document', 'review'];
 
 export interface Task {
   id: string;
@@ -48,6 +49,15 @@ export interface Spend {
 
 export type JobIdentity = Pick<Job, 'id' | 'stage' | 'inputSha' | 'controlSha' | 'planHash' | 'createdAt' | 'runId'> &
   Partial<Pick<Job, 'taskId' | 'attempt'>>;
+
+export interface DelegatedDecisionRecord {
+  grantId: string;
+  optionId: string;
+  rationale: string;
+  evidence: string[];
+  job: JobIdentity;
+  decidedAt: string;
+}
 
 export interface PendingCost {
   job: JobIdentity;
@@ -102,6 +112,7 @@ export interface Lifecycle {
   dependencyPatches?: DependencyPatch[];
   amendment?: Amendment;
   amendmentHistory?: AmendmentDecision[];
+  decisionHistory?: DelegatedDecisionRecord[];
   planVersion?: number;
   preflight?: { kind: 'baseline' | 'dependencies' | 'installed'; sourceSha: string;
     resumePhase: 'researching' | 'awaiting_approval' | 'awaiting_amendment' | 'decomposing' };
@@ -244,10 +255,65 @@ export function executionHash(state: Lifecycle): string {
   return digest({ tasks: state.tasks.map(task => ({ id: task.id, description: task.description,
     acceptance: task.acceptance, dependsOn: task.dependsOn, requirementIds: task.requirementIds,
     steps: task.steps?.map(step => ({ id: step.id, description: step.description, acceptanceIndexes: step.acceptanceIndexes })) })),
+  decisions: activeDecisions(state).map(item => ({ grantId: item.grantId, optionId: item.optionId,
+    rationale: item.rationale, evidence: item.evidence, job: item.job })),
   dependencyChoices: Object.entries(state.dependencyChoices ?? {}).sort(([first], [second]) => first.localeCompare(second)),
   amendment: state.amendment ? { version: state.amendment.version, sourceSha: state.amendment.sourceSha,
     targetSha: state.amendment.targetSha, controlSha: state.amendment.controlSha } : undefined,
   preflight: state.preflight, vendorRepair: state.vendorRepair, maintenanceRecovery: state.maintenanceRecovery });
+}
+
+export function activeDecisions(state: Lifecycle): DelegatedDecisionRecord[] {
+  const planHash = state.plan?.hash;
+  if (!planHash) return [];
+  return (state.decisionHistory ?? []).filter(item => item.job.planHash === planHash);
+}
+
+export function acceptDelegatedDecision(state: Lifecycle, job: Job, runId: number, proposal: DelegatedDecision, at: string):
+  { accepted: true } | { accepted: false; reason: string } {
+  try { assertApproved(state); }
+  catch { return { accepted: false, reason: 'No intact approved plan authorizes delegated decisions' }; }
+  const registered = state.job;
+  if (!delegatedDecisionStages.includes(job.stage) || job.purpose !== undefined || job.planHash !== state.plan!.hash ||
+      !registered || registered.id !== job.id || registered.stage !== job.stage ||
+      registered.inputSha !== job.inputSha || registered.controlSha !== job.controlSha ||
+      registered.planHash !== job.planHash || registered.createdAt !== job.createdAt ||
+      registered.taskId !== job.taskId || registered.attempt !== job.attempt ||
+      registered.stepId !== job.stepId || registered.executionHash !== job.executionHash ||
+      registered.purpose !== job.purpose || registered.runId !== runId || job.runId !== runId) {
+    return { accepted: false, reason: 'The registered stage or plan does not authorize this decision' };
+  }
+  const grant = state.plan!.policy?.decisionGrants?.find(item => item.id === proposal.grantId);
+  if (!grant) return { accepted: false, reason: `Decision grant ${proposal.grantId} is not in the approved plan` };
+  if (grant.requirementIds?.length) {
+    const task = state.tasks.find(item => item.id === job.taskId);
+    if (!task || grant.requirementIds.some(id => !task.requirementIds?.includes(id))) {
+      return { accepted: false, reason: `Decision grant ${grant.id} does not apply to the registered task` };
+    }
+  }
+  if (!grant.options.some(option => option.id === proposal.optionId)) {
+    return { accepted: false, reason: `Option ${proposal.optionId} is not authorized by decision grant ${grant.id}` };
+  }
+  if (activeDecisions(state).some(item => item.grantId === grant.id)) {
+    return { accepted: false, reason: `Decision grant ${grant.id} was already resolved for this plan` };
+  }
+  if ((state.decisionHistory?.length ?? 0) >= 100) {
+    return { accepted: false, reason: 'Delegated decision history budget exhausted' };
+  }
+  state.decisionHistory ??= [];
+  state.decisionHistory.push({
+    grantId: grant.id, optionId: proposal.optionId, rationale: proposal.rationale,
+    evidence: [...proposal.evidence],
+    job: { id: job.id, stage: job.stage, inputSha: job.inputSha, controlSha: job.controlSha,
+      planHash: job.planHash, createdAt: job.createdAt, runId, taskId: job.taskId, attempt: job.attempt },
+    decidedAt: at,
+  });
+  state.job = undefined;
+  state.evidence = [];
+  state.feedback = `Apply approved decision ${grant.id}: select ${proposal.optionId}. ${proposal.rationale}`;
+  state.error = undefined;
+  state.failures = 0;
+  return { accepted: true };
 }
 
 export function jobPlan(state: Lifecycle, job: Pick<Job, 'purpose'>): Plan | undefined {
