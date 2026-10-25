@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Turtle Graphics Playground</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #2b4d8f;
+    --board-bg: #ffffff;
+    --board-border: #7a5cff;
+    --turtle-fill: #2f9e44;
+    --button-bg: #f1f3ff;
+    --button-border: #4c3fbd;
+    --focus-ring: #ff8c00;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #fbf7ff;
+    color: #1c1c28;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    margin: 0.25rem 0;
+    text-align: center;
+  }
+
+  #pen-indicator {
+    font-size: 1.05rem;
+    font-weight: 600;
+    text-align: center;
+    min-height: 1.4em;
+  }
+
+  #board-wrapper {
+    width: 100%;
+    max-width: 400px;
+  }
+
+  #board {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    max-width: 400px;
+    background: var(--board-bg);
+    border: 4px solid var(--board-border);
+    border-radius: 12px;
+  }
+
+  .ink {
+    stroke: var(--ink);
+    stroke-width: 4;
+    stroke-linecap: round;
+  }
+
+  #controls {
+    display: grid;
+    /* auto-fit + a shrinkable minmax floor lets columns collapse to a
+       single column at very narrow effective widths (e.g. 200% browser
+       zoom on a small viewport) instead of forcing an overflow-causing
+       fixed column count. */
+    grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+    gap: 0.6rem;
+    width: 100%;
+    max-width: 420px;
+  }
+
+  button {
+    min-width: 56px;
+    min-height: 56px;
+    font-size: 1rem;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 10px;
+    border: 2px solid var(--button-border);
+    background: var(--button-bg);
+    color: #1c1c28;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background: #e2e6ff;
+  }
+
+  button:focus-visible {
+    outline: 3px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+</style>
+</head>
+<body>
+  <h1>Turtle Graphics Playground</h1>
+  <p id="pen-indicator" aria-live="polite">Pen is down: moving will draw a line.</p>
+
+  <div id="board-wrapper">
+    <svg
+      id="board"
+      viewBox="0 0 400 400"
+      role="img"
+      aria-label="Drawing board with the turtle and its artwork"
+    >
+      <g id="segments"></g>
+      <g id="turtle" aria-hidden="true">
+        <polygon
+          points="0,-10 8,8 0,4 -8,8"
+          fill="#2f9e44"
+          stroke="#1b5e20"
+          stroke-width="1.5"
+        ></polygon>
+      </g>
+    </svg>
+  </div>
+
+  <div id="controls">
+    <button type="button" data-command="penUp">Pen Up</button>
+    <button type="button" data-command="penDown">Pen Down</button>
+    <button type="button" data-command="forward">Move Forward</button>
+    <button type="button" data-command="backward">Move Backwards</button>
+    <button type="button" data-command="turnLeft">Turn Left 90 degrees</button>
+    <button type="button" data-command="turnRight">Turn Right 90 degrees</button>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
