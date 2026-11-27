@@ -535,6 +535,46 @@ Targets have not yet completed a live pilot. Register one disposable target
 first and run the [bounded pilot](#5-run-a-bounded-pilot) against it; local tests
 cannot prove the live Apps, artifact handoff, or target permissions.
 
+### Transition from a same-repository controller
+
+Cross-repository support is additive: the control repository remains its own
+implicit target, keeps its existing `issues/<number>.json` state paths, and can
+continue handling its own issues while serving registered targets. No registry
+entry is needed for the control repository itself.
+
+Moving a repository that runs its own controller to a different control plane is
+a cutover, not a state migration. The old controller's state remains on that
+repository's `sdlc-state` branch under `issues/`; the new control plane creates
+separate state under `targets/<repository-id>/` on its own `sdlc-state` branch.
+There is no automatic import or conversion. Keep the old branch for reference;
+do not copy issue state between controllers or delete it as part of onboarding.
+
+For each repository being moved:
+
+1. Inventory its active lifecycles and pending jobs. Stop starting new work on
+   the old controller and let active lifecycles finish, or pause them using that
+   installation's documented recovery procedure. Do not have both controllers
+   process the same issue.
+2. Deploy and verify the new control plane with the target registered but
+   disabled. Complete the target setup, caller and registry reviews, App
+   installation, and permission checks before switching intake.
+3. Disable the old controller in the target repository, then enable the target
+   in the new control plane. Keep this order to avoid overlapping controllers.
+   Have a writer apply the intake label to a fresh canary issue after enabling;
+   a label event from before activation is not replayed.
+4. Verify the canary's status comment, plan approval, checks, and final PR in
+   the target repository before moving additional work. Existing open issues
+   are not imported as active lifecycles; finish them on the old controller or
+   deliberately re-intake them as new work after the cutover.
+5. Repeat one target at a time, retaining the old state branch and controller
+   configuration until the new path has been verified.
+
+To roll back new intake, disable the target in the control-plane registry and
+stop its caller workflow. Do not switch controllers in the middle of an active
+lifecycle or delete either state branch. If work must return to the old
+controller, first resolve the new controller's active jobs and GitHub artifacts
+manually; its state is not visible to the old controller.
+
 Follow [Target Repository Setup](target-setup.md) to register a target. Its
 [setup](../scripts/sdlc-target-setup.sh) and
 [verify](../scripts/sdlc-target-verify.sh) scripts check every requirement in
