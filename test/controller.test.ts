@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -122,6 +122,10 @@ function controllerProcessFixture(states: Record<string, unknown>, interruptWrit
   const directory = mkdtempSync(join(tmpdir(), 'sdlc-controller-migration-'));
   const store = join(directory, 'store.json');
   const preload = join(directory, 'mock-github.mjs');
+  // The entry point reads configuration from its working directory; an empty registry keeps a deployment's targets out.
+  mkdirSync(join(directory, '.github/sdlc'), { recursive: true });
+  copyFileSync('.github/sdlc/policy.json', join(directory, '.github/sdlc/policy.json'));
+  writeFileSync(join(directory, '.github/sdlc/targets.json'), JSON.stringify({ schemaVersion: 1, targets: [] }));
   writeFileSync(store, JSON.stringify({ states, comments: {}, requests: [], writes: [], interruptWrite }));
   writeFileSync(preload, String.raw`
 import { createHash } from 'node:crypto';
@@ -196,7 +200,7 @@ globalThis.fetch = async (input, init) => {
     execute: (overrides: Record<string, string> = {}, event?: unknown) => {
       if (event !== undefined) writeFileSync(eventPath, JSON.stringify(event));
       return spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, resolve('src/main.ts')], {
-          cwd: process.cwd(), encoding: 'utf8', env: {
+          cwd: directory, encoding: 'utf8', env: {
             GH_TOKEN: 'unused-fixture-token', GITHUB_REPOSITORY: 'owner/repo', SDLC_BOT_LOGIN: 'sdlc[bot]',
             GITHUB_SHA: baseSha, MOCK_STORE: store,
             ...(event === undefined ? {} : { GITHUB_EVENT_PATH: eventPath }),
