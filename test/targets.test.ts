@@ -83,13 +83,16 @@ test('the registry accepts unique foreign targets and rejects duplicates, self r
 });
 
 test('the committed registry parses and a missing registry means no foreign targets', () => {
-  assert.deepEqual(loadRegistry(control), { schemaVersion: 1, targets: [] });
+  const configured = parseRegistry(JSON.parse(readFileSync(registryPath, 'utf8')));
+  assert.deepEqual(loadRegistry(), configured);
   const directory = mkdtempSync(join(tmpdir(), 'sdlc-registry-'));
   try {
-    assert.deepEqual(loadRegistry(control, join(directory, 'absent.json')).targets, []);
+    assert.deepEqual(loadRegistry(control, join(directory, 'absent.json')), registry());
     const path = join(directory, 'targets.json');
-    writeFileSync(path, JSON.stringify(registry(entry(42, 'octo/app'))));
-    assert.equal(loadRegistry(control, path).targets[0]!.repository, 'octo/app');
+    for (const configuration of [registry(), registry(entry(42, 'octo/app', false), entry(43, 'octo/web'))]) {
+      writeFileSync(path, JSON.stringify(configuration));
+      assert.deepEqual(loadRegistry(control, path), configuration);
+    }
     assert.throws(() => loadRegistry(control, directory));
   } finally {
     rmSync(directory, { recursive: true, force: true });
