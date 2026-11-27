@@ -16,6 +16,10 @@ on:
         description: Parent issue number; leave empty to reconcile all lifecycles
         required: false
         type: string
+      target:
+        description: Registered target repository ID from .github/sdlc/targets.json; leave empty for this repository
+        required: false
+        type: string
 
 permissions: {}
 concurrency:
@@ -43,6 +47,14 @@ jobs:
           node-version: '24'
       - name: Install immutable controller dependencies
         run: npm ci --ignore-scripts
+      - name: Detect enabled foreign targets
+        id: targets
+        run: |
+          if [[ -f .github/sdlc/targets.json ]] && jq -e 'any(.targets[]; .enabled == true)' .github/sdlc/targets.json > /dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Mint the scoped publisher token
         id: app
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
@@ -70,5 +82,9 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           SDLC_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
           SDLC_ISSUE: ${{ inputs.issue }}
+          SDLC_TARGET: ${{ inputs.target }}
+          # Per-target tokens are minted in Node, scoped by repository ID; the key is withheld until a target is enabled.
+          SDLC_APP_ID: ${{ vars.SDLC_APP_ID }}
+          SDLC_APP_PRIVATE_KEY: ${{ steps.targets.outputs.enabled == 'true' && secrets.SDLC_APP_PRIVATE_KEY || '' }}
           SDLC_MODEL: ${{ vars.SDLC_MODEL || 'auto' }}
           SDLC_AIC_CREDIT_LIMIT: ${{ vars.SDLC_AIC_CREDIT_LIMIT || '250' }}

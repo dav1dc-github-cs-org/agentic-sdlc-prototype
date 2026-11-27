@@ -85,9 +85,13 @@ export interface Evidence {
   summary: string;
 }
 
+export interface TargetRef { id: number; repository: string }
+
 export interface Lifecycle {
   schemaVersion: 2;
   issueNumber: number;
+  // Absent for the control repository itself, so existing state needs no migration.
+  target?: TargetRef;
   requester: string;
   request: string;
   phase: Phase;
@@ -129,13 +133,16 @@ export interface Lifecycle {
   prNumber?: number;
 }
 
-export function createLifecycle(issueNumber: number, requester: string, request: string, baseSha: string, baseBranch = 'main'): Lifecycle {
-  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1 || !/^[a-f0-9]{40}$/.test(baseSha)) {
+export function createLifecycle(issueNumber: number, requester: string, request: string, baseSha: string, baseBranch = 'main',
+  controlSha = baseSha, target?: TargetRef): Lifecycle {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1 || !/^[a-f0-9]{40}$/.test(baseSha) ||
+      !/^[a-f0-9]{40}$/.test(controlSha)) {
     throw new Error('Lifecycle requires an issue number and immutable commit SHA');
   }
   return {
-    schemaVersion: 2, issueNumber, requester, request, phase: 'researching',
-    baseSha, headSha: baseSha, baseBranch, controlSha: baseSha, branch: `agentic/epic-${issueNumber}-v1`,
+    schemaVersion: 2, issueNumber, ...(target ? { target: { id: target.id, repository: target.repository } } : {}),
+    requester, request, phase: 'researching',
+    baseSha, headSha: baseSha, baseBranch, controlSha, branch: `agentic/epic-${issueNumber}-v1`,
     tasks: [], retiredTasks: [], evidence: [], processedEvents: [], sequence: 0, repairs: 0, failures: 0, feedback: '',
     spend: { runs: 0, runnerMs: 0, credits: 0, nearLimit: 0, preempted: 0, historyComplete: true },
   };

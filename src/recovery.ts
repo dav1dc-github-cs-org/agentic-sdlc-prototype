@@ -46,7 +46,7 @@ export function validateMaintenance(state: Lifecycle, changes: Change[], policy:
   return recovery;
 }
 
-export function beginAmendment(state: Lifecycle, target: { sha: string; branch: string }, request: string,
+export function beginAmendment(state: Lifecycle, target: { sha: string; branch: string; controlSha?: string }, request: string,
   feedback: string, maintainer: boolean, trustedChange: boolean): void {
   assertApproved(state);
   if (target.branch !== state.baseBranch) throw new Error('A default-branch rename requires full replanning');
@@ -55,13 +55,14 @@ export function beginAmendment(state: Lifecycle, target: { sha: string; branch: 
   const version = Math.max(previousPlanVersion(state), state.amendment?.version ?? 0) + 1;
   const requiredMaintainer = trustedChange || state.amendment?.requiredMaintainer === true ||
     state.recoveries?.some(item => item.status === 'waiting_maintainer') === true;
+  const controlSha = target.controlSha ?? target.sha;
   state.amendment = { version, baseSha: state.baseSha, sourceSha: state.headSha,
-    targetSha: target.sha, controlSha: target.sha, request, feedback, previousPlan: structuredClone(state.plan!),
+    targetSha: target.sha, controlSha, request, feedback, previousPlan: structuredClone(state.plan!),
     previousApproval: structuredClone(state.approval!), tasks: structuredClone(state.tasks),
     requiredMaintainer,
     status: 'researching' };
   state.planVersion = version;
-  state.controlSha = target.sha;
+  state.controlSha = controlSha;
   state.job = undefined;
   state.evidence = [];
   state.feedback = feedback;
@@ -75,13 +76,14 @@ export function beginAmendment(state: Lifecycle, target: { sha: string; branch: 
 }
 
 export function decideAmendment(state: Lifecycle, version: number, actor: string, commentId: number, at: string,
-  maintainer: boolean, target: { sha: string; branch: string }, request: string, accept: boolean): void {
+  maintainer: boolean, target: { sha: string; branch: string; controlSha?: string }, request: string, accept: boolean): void {
   const amendment = state.amendment;
   if (!amendment || amendment.version !== version || amendment.status !== 'awaiting_approval' || !amendment.plan ||
       state.phase !== 'awaiting_amendment') throw new Error('There is no matching amendment awaiting approval');
   if (amendment.requiredMaintainer && !maintainer) throw new Error('This amendment requires a maintainer');
   if (accept && (state.headSha !== amendment.sourceSha || state.controlSha !== amendment.controlSha ||
-      target.sha !== amendment.targetSha || target.branch !== state.baseBranch || request !== amendment.request)) {
+      target.sha !== amendment.targetSha || (target.controlSha ?? target.sha) !== amendment.controlSha ||
+      target.branch !== state.baseBranch || request !== amendment.request)) {
     throw new Error('Amendment source, request, or trusted baseline changed; obtain a fresh proposal');
   }
   const approval: Approval = approvePlan({ phase: 'awaiting_approval', plan: amendment.plan, version,
@@ -261,7 +263,8 @@ export function routeRecovery(state: Lifecycle, job: Job, report: Report, policy
     state.error = `Recovery ${recovery.id} (${recovery.status}): ${report.summary}`.slice(0, 12000);
   }
   if (recovery.action === 'maintain' && !recovery.maintenance && job.stage !== 'maintain') {
-    recovery.maintenanceBase = state.controlSha;
+    // A foreign target's repair applies to its own default branch, which the control revision does not describe.
+    recovery.maintenanceBase = state.target ? state.baseSha : state.controlSha;
     state.maintenanceRecovery = recovery.id;
     state.preflight = undefined;
     state.phase = 'maintaining';

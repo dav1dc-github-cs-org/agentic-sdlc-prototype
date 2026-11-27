@@ -5,9 +5,10 @@ import { digest } from './domain.ts';
 import { isProtectedPath, isTestPath, mergeSnapshots, validateChanges } from './changes.ts';
 import { assertIntegration } from './recovery.ts';
 import { validateDependencyChanges } from './dependencies.ts';
-import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
-import { activeDecisions, assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type Task } from './lifecycle.ts';
-import { RetryablePlatformError, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
+import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, targetRefSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
+import { activeDecisions, assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type TargetRef, type Task } from './lifecycle.ts';
+import { RetryablePlatformError, type Baseline, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
+import { assertExposure, receiptWorkflow, registryPath, runTitle, sameRepository, splitRepository, targetBindingChanged } from './targets.ts';
 
 export function workerFile(job: Pick<Job, 'stage'>): string {
   return ['scan', 'validate', 'integrate'].includes(job.stage) ? 'sdlc-checks.yml' : 'sdlc-agent.lock.yml';
@@ -59,9 +60,17 @@ function boundedMarkdown(markdown: string, maxBytes: number, overflowNotice: str
   return `${prefix.trimEnd()}${suffix}`;
 }
 
+export interface TargetBinding extends TargetRef { api: Octokit }
+
+type Scope = { owner: string; repo: string };
+
 export class GitHub implements Platform {
+  // Issues, Git data, pull requests, and checks live in the target; state, dispatch, and run evidence stay in the control plane.
   readonly api: Octokit;
-  readonly scope: { owner: string; repo: string };
+  readonly scope: Scope;
+  readonly controlApi: Octokit;
+  readonly control: Scope;
+  readonly target?: TargetRef;
   readonly policy: Policy;
   readonly botLogin: string;
   readonly model: string;
@@ -69,13 +78,23 @@ export class GitHub implements Platform {
   private readonly commentCache = new Map<number, Awaited<ReturnType<GitHub['fetchComments']>>>();
   private botIssues?: Awaited<ReturnType<GitHub['fetchBotIssues']>>;
 
-  constructor(repository: string, policy: Policy, botLogin: string, api: Octokit, model = 'auto') {
+  constructor(repository: string, policy: Policy, botLogin: string, api: Octokit, model = 'auto', target?: TargetBinding) {
     const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repository);
     if (!match || !/^[a-z0-9-]+\[bot\]$/.test(botLogin)) throw new Error('Invalid repository or App bot identity');
-    this.scope = { owner: match[1]!, repo: match[2]! };
+    this.control = { owner: match[1]!, repo: match[2]! };
+    this.controlApi = api;
+    if (target) {
+      const binding = targetRefSchema.safeParse({ id: target.id, repository: target.repository });
+      if (!binding.success || sameRepository(target.repository, repository)) throw new Error('Invalid foreign target binding');
+      this.target = binding.data;
+      this.scope = splitRepository(binding.data.repository);
+      this.api = target.api;
+    } else {
+      this.scope = this.control;
+      this.api = api;
+    }
     this.policy = policy;
     this.botLogin = botLogin;
-    this.api = api;
     this.model = model || 'auto';
   }
 
@@ -114,9 +133,54 @@ export class GitHub implements Platform {
     } catch (error) { if (missing(error)) return false; throw error; }
   }
 
-  async baseline(): Promise<{ branch: string; sha: string }> {
+  // Every target contact first proves the registered identity and that mirroring its content cannot widen its audience.
+  async verifyTarget() {
+    if (!this.target) throw new Error('No foreign target is bound');
+    const { data: repo } = await this.api.repos.get(this.scope);
+    if (repo.id !== this.target.id || !sameRepository(repo.full_name, this.target.repository)) {
+      throw new Error('Target repository identity changed; revalidate its registry entry before continuing');
+    }
+    const { data: control } = await this.controlApi.repos.get(this.control);
+    assertExposure(control, repo);
+    return { repo, control };
+  }
+
+  async baseline(): Promise<Baseline> {
+    if (this.target) {
+      const { repo, control } = await this.verifyTarget();
+      return { branch: repo.default_branch, sha: await this.head(repo.default_branch),
+        controlSha: await this.controlHead(control.default_branch) };
+    }
     const { data: repo } = await this.api.repos.get(this.scope);
     return { branch: repo.default_branch, sha: await this.head(repo.default_branch) };
+  }
+
+  async controlRevision(): Promise<{ branch: string; sha: string }> {
+    const { data: repo } = await this.controlApi.repos.get(this.control);
+    return { branch: repo.default_branch, sha: await this.controlHead(repo.default_branch) };
+  }
+
+  private async controlHead(branch: string): Promise<string> {
+    return (await this.controlApi.git.getRef({ ...this.control, ref: `heads/${branch}` })).data.object.sha;
+  }
+
+  private async controlFile(path: string, ref: string): Promise<unknown> {
+    try {
+      const { data } = await this.controlApi.repos.getContent({ ...this.control, path, ref });
+      if (Array.isArray(data) || data.type !== 'file' || data.size > 1_000_000) return undefined;
+      return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+    } catch (error) {
+      if (missing(error) || error instanceof SyntaxError) return undefined;
+      throw error;
+    }
+  }
+
+  private ownsState(state: Lifecycle): boolean {
+    return this.target ? state.target?.id === this.target.id : state.target === undefined;
+  }
+
+  private statePath(number: number): string {
+    return this.target ? `targets/${this.target.id}/issues/${number}.json` : `issues/${number}.json`;
   }
 
   async baselineTests(state: Lifecycle): Promise<string[]> {
@@ -223,13 +287,18 @@ export class GitHub implements Platform {
 
   async trustedPathsChanged(from: string, to: string): Promise<boolean> {
     if (from === to) return false;
-    const { data } = await this.api.repos.compareCommitsWithBasehead({ ...this.scope, basehead: `${from}...${to}` });
+    const { data } = await this.controlApi.repos.compareCommitsWithBasehead({ ...this.control, basehead: `${from}...${to}` });
     const files = data.files;
     // Only a clean fast-forward with a complete file list can be judged. Reverts, force pushes, and
     // diffs at or past the comparison file cap are indistinguishable from a swapped harness.
     if (data.status !== 'ahead' || files === undefined || files.length >= 300) return true;
-    return files.some(file => isProtectedPath(file.filename, this.policy) ||
-      (file.previous_filename !== undefined && isProtectedPath(file.previous_filename, this.policy)));
+    const changed = files.flatMap(file => file.previous_filename === undefined ? [file.filename] : [file.filename, file.previous_filename])
+      .filter(path => isProtectedPath(path, this.policy));
+    // Intake-only files govern new receipts, not running lifecycles; the receipt callee is pinned by the registry.
+    const intakeOnly = (path: string) => path === registryPath || path === receiptWorkflow || path.startsWith('.github/sdlc/templates/');
+    if (changed.some(path => !intakeOnly(path))) return true;
+    if (!this.target || !changed.includes(registryPath)) return false;
+    return targetBindingChanged(await this.controlFile(registryPath, from), await this.controlFile(registryPath, to), this.target);
   }
 
   async head(branch: string): Promise<string> {
@@ -238,11 +307,12 @@ export class GitHub implements Platform {
 
   async load(number: number): Promise<RecordState | undefined> {
     try {
-      const { data } = await this.api.repos.getContent({ ...this.scope, path: `issues/${number}.json`, ref: this.policy.stateBranch });
+      const { data } = await this.controlApi.repos.getContent({ ...this.control, path: this.statePath(number), ref: this.policy.stateBranch });
       if (Array.isArray(data) || data.type !== 'file' || data.size > 1_000_000) throw new Error('Invalid state file');
       const stored = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
       const state = migrateLifecycle(stored);
-      if (state.issueNumber !== number || state.branch !== `agentic/epic-${number}-v${state.plan?.version ?? 1}` &&
+      if (state.issueNumber !== number || !this.ownsState(state) ||
+          state.branch !== `agentic/epic-${number}-v${state.plan?.version ?? 1}` &&
           !['researching', 'preflighting', 'maintaining', 'paused', 'blocked', 'cancelled'].includes(state.phase)) {
         throw new Error('State identity mismatch');
       }
@@ -252,12 +322,13 @@ export class GitHub implements Platform {
 
   async save(record: RecordState): Promise<void> {
     lifecycleSchema.parse(record.state);
+    if (!this.ownsState(record.state)) throw new Error('State identity mismatch');
     const content = JSON.stringify(record.state, null, 2) + '\n';
     if (Buffer.byteLength(content) > 1_000_000) throw new Error('Lifecycle storage budget exceeded');
     await this.ensureStateBranch();
-    const { data } = await this.api.repos.createOrUpdateFileContents({
-      ...this.scope, branch: this.policy.stateBranch, path: `issues/${record.state.issueNumber}.json`,
-      message: `SDLC #${record.state.issueNumber}: ${record.state.phase}`,
+    const { data } = await this.controlApi.repos.createOrUpdateFileContents({
+      ...this.control, branch: this.policy.stateBranch, path: this.statePath(record.state.issueNumber),
+      message: `SDLC ${this.target ? `${this.target.id}/` : ''}#${record.state.issueNumber}: ${record.state.phase}`,
       content: Buffer.from(content).toString('base64'),
       sha: record.version,
     });
@@ -266,25 +337,28 @@ export class GitHub implements Platform {
     delete record.needsMigration;
   }
 
-  private async ensureStateBranch(): Promise<void> {
-    try { await this.head(this.policy.stateBranch); return; }
+  async ensureStateBranch(): Promise<void> {
+    try { await this.controlHead(this.policy.stateBranch); return; }
     catch (error) { if (!missing(error)) throw error; }
-    const { data: tree } = await this.api.git.createTree({ ...this.scope, tree: [
+    const { data: tree } = await this.controlApi.git.createTree({ ...this.control, tree: [
       { path: 'README.md', mode: '100644', type: 'blob', content: 'Controller-owned SDLC state. Do not edit manually.\n' },
     ] });
-    const { data: commit } = await this.api.git.createCommit({ ...this.scope, tree: tree.sha,
+    const { data: commit } = await this.controlApi.git.createCommit({ ...this.control, tree: tree.sha,
       message: 'Initialize controller-owned SDLC state', parents: [] });
-    await this.api.git.createRef({ ...this.scope, ref: `refs/heads/${this.policy.stateBranch}`, sha: commit.sha });
+    await this.controlApi.git.createRef({ ...this.control, ref: `refs/heads/${this.policy.stateBranch}`, sha: commit.sha });
   }
 
   async activeIssues(): Promise<number[]> {
     const numbers = new Set<number>();
     try {
-      const { data } = await this.api.repos.getContent({ ...this.scope, path: 'issues', ref: this.policy.stateBranch });
+      const { data } = await this.controlApi.repos.getContent({ ...this.control,
+        path: this.target ? `targets/${this.target.id}/issues` : 'issues', ref: this.policy.stateBranch });
       if (Array.isArray(data)) for (const item of data) {
         if (/^[1-9]\d*\.json$/.test(item.name)) numbers.add(Number(item.name.replace('.json', '')));
       }
     } catch (error) { if (!missing(error)) throw error; }
+    // Foreign intake arrives only through authenticated receipts, so a label alone never starts work there.
+    if (this.target) return [...numbers].sort((first, second) => first - second);
     const labeled = await this.api.paginate(this.api.issues.listForRepo, {
       ...this.scope, state: 'open', labels: this.policy.label, per_page: 100,
     });
@@ -348,18 +422,24 @@ export class GitHub implements Platform {
   }
 
   async dispatch(job: Job, state: Lifecycle): Promise<void> {
-    await this.api.actions.createWorkflowDispatch({ ...this.scope, workflow_id: workerFile(job),
-      ref: state.baseBranch, inputs: { issue: String(state.issueNumber), job: job.id,
-        source_sha: job.inputSha, control_sha: job.controlSha, stage: job.stage },
+    if (!this.ownsState(state)) throw new Error('State identity mismatch');
+    // Workers always run in the control repository, so a foreign target dispatches against the control default branch.
+    await this.controlApi.actions.createWorkflowDispatch({ ...this.control, workflow_id: workerFile(job),
+      ref: this.target ? (await this.controlRevision()).branch : state.baseBranch,
+      inputs: { issue: String(state.issueNumber), job: job.id,
+        source_sha: job.inputSha, control_sha: job.controlSha, stage: job.stage,
+        ...(this.target ? { target_id: String(this.target.id), target_owner: this.scope.owner, target_name: this.scope.repo } : {}) },
     });
   }
 
   async findRun(job: JobIdentity): Promise<Run | undefined> {
-    const runs = await this.api.paginate(this.api.actions.listWorkflowRuns, {
-      ...this.scope, workflow_id: workerFile(job), event: 'workflow_dispatch',
+    const runs = await this.controlApi.paginate(this.controlApi.actions.listWorkflowRuns, {
+      ...this.control, workflow_id: workerFile(job), event: 'workflow_dispatch',
       head_sha: job.controlSha, created: `>=${job.createdAt}`, per_page: 100,
     });
-    const matches = runs.filter(run => run.display_title === `SDLC ${job.id}` && run.head_sha === job.controlSha &&
+    // Job IDs repeat across targets; the target-qualified title keeps one target's run from satisfying another's job.
+    const title = runTitle(job.id, this.target);
+    const matches = runs.filter(run => run.display_title === title && run.head_sha === job.controlSha &&
       run.actor?.login === this.botLogin && run.run_attempt === 1 &&
       (!job.runId || run.id === job.runId)).sort((first, second) => first.id - second.id);
     const run = matches[0];
@@ -368,13 +448,13 @@ export class GitHub implements Platform {
   }
 
   async cancelRun(runId: number): Promise<void> {
-    await this.api.actions.cancelWorkflowRun({ ...this.scope, run_id: runId });
+    await this.controlApi.actions.cancelWorkflowRun({ ...this.control, run_id: runId });
   }
 
   async report(run: Run, job: Job): Promise<Report> {
     if (['scan', 'validate', 'integrate'].includes(job.stage)) {
-      const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
-        ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
+      const jobs = await this.controlApi.paginate(this.controlApi.actions.listJobsForWorkflowRun, {
+        ...this.control, run_id: run.id, filter: 'latest', per_page: 100,
       });
       const result = jobs.find(item => item.name === 'SDLC Check Result');
       if (!result) throw new RetryablePlatformError('The trusted check-result job is not available yet');
@@ -382,17 +462,17 @@ export class GitHub implements Platform {
         throw new Error('The trusted check-result job did not complete successfully');
       }
     }
-    const artifacts = await this.api.paginate(this.api.actions.listWorkflowRunArtifacts, { ...this.scope, run_id: run.id, per_page: 100 });
+    const artifacts = await this.controlApi.paginate(this.controlApi.actions.listWorkflowRunArtifacts, { ...this.control, run_id: run.id, per_page: 100 });
     const matches = artifacts.filter(artifact => artifact.name === 'sdlc-result' && !artifact.expired);
     if (!matches.length) throw new RetryablePlatformError('The worker artifact is not available yet');
     if (matches.length !== 1 || matches[0]!.size_in_bytes > 2_000_000) throw new Error('Duplicate or oversized worker artifact');
-    const response = await this.api.actions.downloadArtifact({ ...this.scope, artifact_id: matches[0]!.id, archive_format: 'zip' });
+    const response = await this.controlApi.actions.downloadArtifact({ ...this.control, artifact_id: matches[0]!.id, archive_format: 'zip' });
     return decodeReportArchive(new Uint8Array(response.data as ArrayBuffer));
   }
 
   async cost(run: Run, job: JobIdentity): Promise<Cost & { runnerMs: number }> {
-    const jobs = await this.api.paginate(this.api.actions.listJobsForWorkflowRun, {
-      ...this.scope, run_id: run.id, filter: 'latest', per_page: 100,
+    const jobs = await this.controlApi.paginate(this.controlApi.actions.listJobsForWorkflowRun, {
+      ...this.control, run_id: run.id, filter: 'latest', per_page: 100,
     });
     // Public repositories report zero billable time, so charge the summed job durations instead.
     const runnerMs = jobs.reduce((total, item) => {
@@ -401,13 +481,13 @@ export class GitHub implements Platform {
       return total + (completed > started ? completed - started : 0);
     }, 0);
     if (['scan', 'validate', 'integrate'].includes(job.stage)) return { runnerMs, credits: 0, preempted: false };
-    const artifacts = await this.api.paginate(this.api.actions.listWorkflowRunArtifacts, {
-      ...this.scope, run_id: run.id, per_page: 100,
+    const artifacts = await this.controlApi.paginate(this.controlApi.actions.listWorkflowRunArtifacts, {
+      ...this.control, run_id: run.id, per_page: 100,
     });
     const matches = artifacts.filter(artifact => artifact.name === 'sdlc-cost' && !artifact.expired);
     if (matches.length !== 1 || matches[0]!.size_in_bytes > 10_000) return { runnerMs, credits: null, preempted: null };
-    const response = await this.api.actions.downloadArtifact({
-      ...this.scope, artifact_id: matches[0]!.id, archive_format: 'zip',
+    const response = await this.controlApi.actions.downloadArtifact({
+      ...this.control, artifact_id: matches[0]!.id, archive_format: 'zip',
     });
     return { runnerMs, ...decodeCostArchive(new Uint8Array(response.data as ArrayBuffer)) };
   }
@@ -506,10 +586,11 @@ export class GitHub implements Platform {
     let pullNumber = mine.find(candidate => candidate.state === 'open')?.number;
     if (!pullNumber && mine.length) throw new Error('The feature pull request for this plan was already closed');
     const issueUrl = `https://github.com/${this.scope.owner}/${this.scope.repo}/issues/${state.issueNumber}`;
+    const runUrl = (id: number) => `https://github.com/${this.control.owner}/${this.control.repo}/actions/runs/${id}`;
     const evidence = state.evidence.map(item => boundedMarkdown(
       `- **${item.stage}**: ${neutralizeClosingKeywords(item.summary)}\n  ` +
-      `[Run ${item.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`,
-      1400, `[Full report and evidence](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.runId})`,
+      `[Run ${item.runId}](${runUrl(item.runId)})`,
+      1400, `[Full report and evidence](${runUrl(item.runId)})`,
     )).join('\n');
     const active = activeDecisions(state);
     const decisionSummaryBudget = active.length ? Math.floor(22_000 / active.length) : 1400;
@@ -521,7 +602,7 @@ export class GitHub implements Platform {
         `${neutralizeClosingKeywords(choice)}**: ` +
         `${neutralizeClosingKeywords(item.rationale)}\n  ` +
         `Evidence: ${item.evidence.map(neutralizeClosingKeywords).join('; ')}. ` +
-        `[Decision run ${item.job.runId}](https://github.com/${this.scope.owner}/${this.scope.repo}/actions/runs/${item.job.runId})`;
+        `[Decision run ${item.job.runId}](${runUrl(item.job.runId!)})`;
       return boundedMarkdown(summary, Math.min(1400, decisionSummaryBudget),
         `[Full decision rationale and evidence in the issue timeline](${issueUrl})`);
     }).join('\n');

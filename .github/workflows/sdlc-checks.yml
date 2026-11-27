@@ -1,5 +1,5 @@
 name: SDLC Checks
-run-name: SDLC ${{ inputs.job }}
+run-name: SDLC ${{ inputs.target_id && format('{0}/{1}', inputs.target_id, inputs.job) || inputs.job }}
 
 on:
   workflow_dispatch:
@@ -25,16 +25,49 @@ on:
         required: true
         type: choice
         options: [scan, validate, integrate]
+      target_id:
+        description: Registered target repository ID, empty for this repository
+        required: false
+        default: ''
+        type: string
+      target_owner:
+        description: Registered target repository owner
+        required: false
+        default: ''
+        type: string
+      target_name:
+        description: Registered target repository name
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 concurrency:
-  group: sdlc-checks-${{ inputs.job }}
+  group: sdlc-checks-${{ inputs.target_id && format('{0}-', inputs.target_id) || '' }}${{ inputs.job }}
   cancel-in-progress: false
 
 jobs:
+  source:
+    if: inputs.target_id != ''
+    uses: ./.github/workflows/sdlc-source.yml
+    permissions:
+      contents: read
+    with:
+      issue: ${{ inputs.issue }}
+      job: ${{ inputs.job }}
+      source_sha: ${{ inputs.source_sha }}
+      control_sha: ${{ inputs.control_sha }}
+      stage: ${{ inputs.stage }}
+      target_id: ${{ inputs.target_id }}
+      target_owner: ${{ inputs.target_owner }}
+      target_name: ${{ inputs.target_name }}
   prepare:
+    needs: source
     if: >-
+      !cancelled() &&
+      (inputs.target_id == '' && needs.source.result == 'skipped' ||
+       inputs.target_id != '' && needs.source.result == 'success') &&
       vars.SDLC_ENABLED == 'true' &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       github.actor == format('{0}[bot]', vars.SDLC_APP_SLUG) &&
@@ -53,6 +86,11 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: inputs.target_id != ''
+        with:
+          name: sdlc-source
+          path: .sdlc-source
       - id: context
         run: node src/worker.ts prepare
         env:
@@ -63,6 +101,9 @@ jobs:
           SDLC_SOURCE_SHA: ${{ inputs.source_sha }}
           SDLC_CONTROL_SHA: ${{ inputs.control_sha }}
           SDLC_STAGE: ${{ inputs.stage }}
+          SDLC_TARGET_ID: ${{ inputs.target_id }}
+          SDLC_TARGET_OWNER: ${{ inputs.target_owner }}
+          SDLC_TARGET_NAME: ${{ inputs.target_name }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: sdlc-context
@@ -72,7 +113,8 @@ jobs:
           retention-days: 14
   codeql:
     needs: prepare
-    if: inputs.stage == 'scan'
+    # Explicit: a skipped source ancestor would otherwise skip this job.
+    if: "!cancelled() && needs.prepare.result == 'success' && inputs.stage == 'scan'"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     outputs:
@@ -88,6 +130,7 @@ jobs:
           path: control
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.target_id == ''
         with:
           ref: ${{ needs.prepare.outputs.scan_sha }}
           path: source
@@ -99,6 +142,16 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: sdlc-context
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: inputs.target_id != ''
+        with:
+          name: sdlc-source
+          path: .sdlc-source
+      - name: Materialize the verified target source
+        if: inputs.target_id != ''
+        run: node control/src/worker.ts materialize source "$SCAN_SHA"
+        env:
+          SCAN_SHA: ${{ needs.prepare.outputs.scan_sha }}
       - name: Verify approved dependency bytes or stage preflight artifacts
         run: node control/src/worker.ts dependencies
       - uses: github/codeql-action/init@fddeee1a7ece751b577e409a89057319e3172939
@@ -122,7 +175,7 @@ jobs:
           retention-days: 14
   security:
     needs: prepare
-    if: inputs.stage == 'scan'
+    if: "!cancelled() && needs.prepare.result == 'success' && inputs.stage == 'scan'"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -132,6 +185,7 @@ jobs:
           path: control
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.target_id == ''
         with:
           ref: ${{ needs.prepare.outputs.scan_sha }}
           path: source
@@ -143,6 +197,16 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: sdlc-context
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: inputs.target_id != ''
+        with:
+          name: sdlc-source
+          path: .sdlc-source
+      - name: Materialize the verified target source
+        if: inputs.target_id != ''
+        run: node control/src/worker.ts materialize source "$SCAN_SHA"
+        env:
+          SCAN_SHA: ${{ needs.prepare.outputs.scan_sha }}
       - name: Verify approved dependency bytes or stage preflight artifacts
         run: node control/src/worker.ts dependencies
       - name: Check dependencies against the advisory database
@@ -172,7 +236,7 @@ jobs:
           retention-days: 14
   tests:
     needs: prepare
-    if: inputs.stage == 'validate'
+    if: "!cancelled() && needs.prepare.result == 'success' && inputs.stage == 'validate'"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -182,11 +246,13 @@ jobs:
           path: control
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.target_id == ''
         with:
           ref: ${{ needs.prepare.outputs.base_sha }}
           path: baseline
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: inputs.target_id == ''
         with:
           ref: ${{ inputs.source_sha }}
           path: source
@@ -194,9 +260,22 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: '24'
+      - run: npm ci --ignore-scripts --prefix control
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: inputs.target_id != ''
+        with:
+          name: sdlc-source
+          path: .sdlc-source
+      - name: Materialize the verified target baseline and source
+        if: inputs.target_id != ''
+        run: |
+          node control/src/worker.ts materialize baseline "$BASE_SHA"
+          node control/src/worker.ts materialize source "$SOURCE_SHA"
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
       - name: Install dependencies without lifecycle scripts
         run: |
-          npm ci --ignore-scripts --prefix control
           npm ci --ignore-scripts --prefix baseline
           npm ci --ignore-scripts --prefix source
       - name: Execute baseline and candidate tests under immutable coverage policy
@@ -211,7 +290,8 @@ jobs:
           retention-days: 14
   integration:
     needs: prepare
-    if: inputs.stage == 'integrate'
+    # Foreign targets are integrated in the Reader-zone source job instead.
+    if: "!cancelled() && needs.prepare.result == 'success' && inputs.stage == 'integrate' && inputs.target_id == ''"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -237,7 +317,7 @@ jobs:
           SDLC_BOT_LOGIN: ${{ vars.SDLC_APP_SLUG }}[bot]
   result:
     name: SDLC Check Result
-    needs: [prepare, codeql, security, tests, integration]
+    needs: [source, prepare, codeql, security, tests, integration]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -256,6 +336,7 @@ jobs:
           SDLC_JOB: ${{ inputs.job }}
           SDLC_SOURCE_SHA: ${{ inputs.source_sha }}
           SDLC_STAGE: ${{ inputs.stage }}
+          SDLC_TARGET_ID: ${{ inputs.target_id }}
           SDLC_CHECK_RESULTS: ${{ toJSON(needs) }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:

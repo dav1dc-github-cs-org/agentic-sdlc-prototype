@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -122,6 +122,10 @@ function controllerProcessFixture(states: Record<string, unknown>, interruptWrit
   const directory = mkdtempSync(join(tmpdir(), 'sdlc-controller-migration-'));
   const store = join(directory, 'store.json');
   const preload = join(directory, 'mock-github.mjs');
+  // The entry point reads configuration from its working directory; an empty registry keeps a deployment's targets out.
+  mkdirSync(join(directory, '.github/sdlc'), { recursive: true });
+  copyFileSync('.github/sdlc/policy.json', join(directory, '.github/sdlc/policy.json'));
+  writeFileSync(join(directory, '.github/sdlc/targets.json'), JSON.stringify({ schemaVersion: 1, targets: [] }));
   writeFileSync(store, JSON.stringify({ states, comments: {}, requests: [], writes: [], interruptWrite }));
   writeFileSync(preload, String.raw`
 import { createHash } from 'node:crypto';
@@ -196,7 +200,7 @@ globalThis.fetch = async (input, init) => {
     execute: (overrides: Record<string, string> = {}, event?: unknown) => {
       if (event !== undefined) writeFileSync(eventPath, JSON.stringify(event));
       return spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, resolve('src/main.ts')], {
-          cwd: process.cwd(), encoding: 'utf8', env: {
+          cwd: directory, encoding: 'utf8', env: {
             GH_TOKEN: 'unused-fixture-token', GITHUB_REPOSITORY: 'owner/repo', SDLC_BOT_LOGIN: 'sdlc[bot]',
             GITHUB_SHA: baseSha, MOCK_STORE: store,
             ...(event === undefined ? {} : { GITHUB_EVENT_PATH: eventPath }),
@@ -873,6 +877,19 @@ test('controller entry point ignores PR events before loading or migrating state
     assert.deepEqual(fixture.read().requests, ['GET /repos/owner/repo', 'GET /repos/owner/repo/git/ref/heads/main']);
     assert.deepEqual(fixture.read().writes, []);
     assert.equal(fixture.read().states['1'].schemaVersion, 1);
+  } finally { fixture.dispose(); }
+});
+
+test('controller entry point never routes a target-qualified run to a control-repository issue', () => {
+  const fixture = controllerProcessFixture({
+    2: { ...createLifecycle(2, 'requester', 'Feature', baseSha), schemaVersion: 1, spend: undefined },
+  });
+  try {
+    const result = fixture.execute({}, { workflow_run: { display_title: 'SDLC 42/2-7' } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.deepEqual(fixture.read().writes, []);
+    assert.equal(fixture.read().states['2'].schemaVersion, 1);
   } finally { fixture.dispose(); }
 });
 
@@ -1603,6 +1620,114 @@ test('approval pins the plan to the revision it is approved against', async () =
   await rejected.controller.tick(123);
   assert.equal(rejected.platform.stored!.state.phase, 'awaiting_approval');
   assert.match([...rejected.platform.outputs.values()].join('\n'), /trusted revision changed/);
+});
+
+class ForeignPlatform extends FakePlatform {
+  readonly target = { id: 42, repository: 'octo/app' };
+  controlHead = 'c'.repeat(40);
+  compared: [string, string][] = [];
+  override async baseline() { return { branch: 'main', sha: this.baselineSha, controlSha: this.controlHead }; }
+  override async trustedPathsChanged(from: string, to: string) {
+    this.compared.push([from, to]);
+    return super.trustedPathsChanged(from, to);
+  }
+}
+
+async function foreignCoding() {
+  const platform = new ForeignPlatform();
+  const controller = new Controller(platform, policy);
+  await controller.tick(123, intake(platform));
+  platform.finish({ plan: 'Implement the feature with regression coverage.' });
+  await controller.tick(123);
+  platform.reply('/sdlc approve v1');
+  await controller.tick(123);
+  platform.finish({ tasks: [{ id: 'first', title: 'First task', description: 'Independent', acceptance: ['Works'], dependsOn: [] }] });
+  await controller.tick(123);
+  return { platform, controller };
+}
+
+test('foreign lifecycles pin the control revision separately from the target baseline', async () => {
+  const platform = new ForeignPlatform();
+  const controller = new Controller(platform, policy);
+  await controller.tick(123, intake(platform));
+  let state = platform.stored!.state;
+  assert.deepEqual(state.target, platform.target);
+  assert.equal(state.baseSha, baseSha);
+  assert.equal(state.controlSha, platform.controlHead);
+  assert.equal(platform.dispatched[0]!.controlSha, platform.controlHead);
+  assert.equal(platform.dispatched[0]!.inputSha, baseSha);
+
+  platform.finish({ plan: 'Implement the feature with regression coverage.' });
+  await controller.tick(123);
+  const movedTarget = 'f'.repeat(40);
+  const movedControl = 'd'.repeat(40);
+  platform.baselineSha = movedTarget;
+  platform.controlHead = movedControl;
+  platform.compared = [];
+  platform.reply('/sdlc approve v1');
+  await controller.tick(123);
+  state = platform.stored!.state;
+  assert.equal(state.phase, 'decomposing');
+  assert.equal(state.baseSha, movedTarget);
+  assert.equal(state.headSha, movedTarget);
+  assert.equal(state.controlSha, movedControl);
+  assert.ok(platform.compared.length > 0);
+  for (const pair of platform.compared) assert.ok(!pair.includes(movedTarget) && !pair.includes(baseSha), 'target SHAs are never compared as control revisions');
+});
+
+test('foreign target movement never adopts a target SHA as the trusted control revision', async () => {
+  const { platform, controller } = await foreignCoding();
+  const pinned = platform.stored!.state.controlSha;
+  platform.baselineSha = 'f'.repeat(40);
+  platform.finish({ changes: [{ path: 'src/feature/new.ts', content: 'First' }] });
+  await controller.tick(123);
+  let state = platform.stored!.state;
+  assert.notEqual(state.phase, 'blocked');
+  assert.equal(state.controlSha, pinned);
+  assert.equal(state.baseSha, baseSha);
+
+  platform.controlHead = 'd'.repeat(40);
+  platform.finish({ changes: [] });
+  await controller.tick(123);
+  state = platform.stored!.state;
+  assert.notEqual(state.phase, 'blocked');
+  assert.equal(state.controlSha, 'd'.repeat(40));
+
+  platform.controlHead = 'e'.repeat(40);
+  platform.trustedChange = true;
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'blocked');
+});
+
+test('foreign amendments bind both the target baseline and the control revision', async () => {
+  const { platform, controller } = await foreignCoding();
+  const pinned = platform.stored!.state.controlSha;
+  platform.baselineSha = 'f'.repeat(40);
+  platform.controlHead = 'd'.repeat(40);
+  platform.trustedChange = true;
+  platform.compared = [];
+  platform.reply('/sdlc amend Adopt the updated control policy and retain the implemented feature.', 'maintainer');
+  await controller.tick(123);
+  let state = platform.stored!.state;
+  assert.deepEqual(platform.compared[0], [pinned, 'd'.repeat(40)]);
+  assert.equal(state.amendment!.targetSha, 'f'.repeat(40));
+  assert.equal(state.amendment!.controlSha, 'd'.repeat(40));
+  assert.equal(state.controlSha, 'd'.repeat(40));
+  platform.finish({ plan: 'Same feature under the updated control policy.' });
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.phase, 'awaiting_amendment');
+
+  platform.controlHead = 'e'.repeat(40);
+  platform.reply('/sdlc approve-amendment v2', 'maintainer');
+  await controller.tick(123);
+  state = platform.stored!.state;
+  assert.equal(state.phase, 'awaiting_amendment');
+  assert.equal(platform.integrations, 0);
+
+  platform.controlHead = 'd'.repeat(40);
+  platform.reply('/sdlc approve-amendment v2', 'maintainer');
+  await controller.tick(123);
+  assert.equal(platform.stored!.state.job!.stage, 'integrate');
 });
 
 test('untrusted worker output cannot publish policy changes or skip stages', async () => {

@@ -8,7 +8,10 @@ import { assessChanges, describeCapabilities, validateChanges, type Capabilities
 import { blockerSchema, reportSchema, resolvePolicy, shaSchema, workerReportSchema, type Change, type Policy } from './contracts.ts';
 import { dependencyChanges, dependencyPlan, validatePlanPolicy, verifyDependencyFiles } from './dependencies.ts';
 import { GitHub } from './github.ts';
-import { activeDecisions, assertJobAuthorization, executionHash, type Lifecycle, type Stage } from './lifecycle.ts';
+import { activeDecisions, assertJobAuthorization, executionHash, type Lifecycle, type Stage, type TargetRef } from './lifecycle.ts';
+import { bundleFile, createBundle, manifestFile, manifestSchema, materialize, readManifest, sourceCommits, sourceDirectory,
+  verifyManifest, workerTarget } from './source.ts';
+import { registryPath } from './targets.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -108,9 +111,7 @@ export function writeDraft(source: string, changes: Change[]): void {
   }
 }
 
-async function prepare(): Promise<void> {
-  const policy = resolvePolicy(JSON.parse(readFileSync(join(root, '.github/sdlc/policy.json'), 'utf8')),
-    process.env.SDLC_AIC_CREDIT_LIMIT);
+function workerInput() {
   const input = {
     issue: z.coerce.number().int().positive().parse(process.env.SDLC_ISSUE), job: process.env.SDLC_JOB ?? '',
     sourceSha: shaSchema.parse(process.env.SDLC_SOURCE_SHA), controlSha: shaSchema.parse(process.env.SDLC_CONTROL_SHA),
@@ -119,12 +120,29 @@ async function prepare(): Promise<void> {
   if (process.env.GITHUB_SHA !== input.controlSha || process.env.GITHUB_ACTOR !== process.env.SDLC_BOT_LOGIN) {
     throw new Error('Worker must run the trusted workflow revision under the controller App identity');
   }
-  const github = new GitHub(process.env.GITHUB_REPOSITORY ?? '', policy, process.env.SDLC_BOT_LOGIN ?? '',
-    new Octokit({ auth: process.env.GH_TOKEN }));
+  return input;
+}
+
+function sourceManifest(state: Lifecycle, target: TargetRef, input: ReturnType<typeof workerInput>, policy: Policy): string[] {
+  const directory = resolve(process.env.GITHUB_WORKSPACE ?? process.cwd(), process.env.SDLC_SOURCE_DIR ?? sourceDirectory);
+  return verifyManifest(readManifest(directory), { target, issue: input.issue, job: input.job,
+    controlSha: input.controlSha, commits: sourceCommits(state) }, policy);
+}
+
+export async function prepare(registry = join(root, registryPath)): Promise<void> {
+  const policy = resolvePolicy(JSON.parse(readFileSync(join(root, '.github/sdlc/policy.json'), 'utf8')),
+    process.env.SDLC_AIC_CREDIT_LIMIT);
+  const input = workerInput();
+  const target = workerTarget(process.env, registry);
+  const control = new Octokit({ auth: process.env.GH_TOKEN });
+  // Only control-plane state is read here; target code and trees arrive through the verified source manifest.
+  const github = new GitHub(process.env.GITHUB_REPOSITORY ?? '', policy, process.env.SDLC_BOT_LOGIN ?? '', control,
+    'auto', target && { ...target, api: control });
   const record = await github.load(input.issue);
   if (!record) throw new Error('No registered lifecycle');
   prepareContext(record.state, input);
-  const capabilities = describeCapabilities(record.state.job!.stage, policy, await github.baselineTests(record.state));
+  const baselineTests = target ? sourceManifest(record.state, target, input, policy) : await github.baselineTests(record.state);
+  const capabilities = describeCapabilities(record.state.job!.stage, policy, baselineTests);
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
     `base_sha=${shaSchema.parse(record.state.baseSha)}\nscan_sha=${record.state.job!.probeSha ?? input.sourceSha}\n`);
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
@@ -192,10 +210,16 @@ function checks(): void {
   const results = JSON.parse(process.env.SDLC_CHECK_RESULTS ?? '{}') as Record<string, {
     result?: string; outputs?: { diagnostics?: string; blocker?: string; integration_hash?: string };
   }>;
-  const required = stage === 'scan' ? ['prepare', 'codeql', 'security'] : stage === 'integrate' ? ['prepare', 'integration'] : ['prepare', 'tests'];
+  // A foreign target's Reader-zone source job fetches its code and computes its integration; nothing else may reach it.
+  const target = Boolean(process.env.SDLC_TARGET_ID);
+  const integrationJob = target ? 'source' : 'integration';
+  const required = [...(target ? ['source'] : []), 'prepare',
+    ...stage === 'scan' ? ['codeql', 'security'] : stage === 'integrate' ? target ? [] : ['integration'] : ['tests']];
   const failed = required.filter(name => results[name]?.result !== 'success');
-  const integrationHash = stage === 'integrate' ? results.integration?.outputs?.integration_hash : undefined;
-  if (stage === 'integrate' && !failed.length && !/^[a-f0-9]{64}$/.test(integrationHash ?? '')) failed.push('integration_receipt');
+  const integrationHash = stage === 'integrate' ? results[integrationJob]?.outputs?.integration_hash : undefined;
+  if (stage === 'integrate' && !failed.length && !/^[a-f0-9]{64}$/.test(integrationHash ?? '')) {
+    failed.push(target && results.source?.outputs?.blocker ? 'integration' : 'integration_receipt');
+  }
   const encoded = failed.includes('codeql') ? results.codeql?.outputs?.diagnostics : undefined;
   let diagnostics = '';
   if (typeof encoded === 'string' && encoded.length <= 32_000) {
@@ -206,7 +230,7 @@ function checks(): void {
   }
   let blocker;
   const encodedBlocker = failed.includes('codeql') ? results.codeql?.outputs?.blocker :
-    failed.includes('integration') ? results.integration?.outputs?.blocker : undefined;
+    failed.includes('integration') ? results[integrationJob]?.outputs?.blocker : undefined;
   if (encodedBlocker && encodedBlocker.length <= 32000) {
     try { blocker = blockerSchema.parse(JSON.parse(encodedBlocker)); } catch { blocker = undefined; }
   }
@@ -228,6 +252,13 @@ function checks(): void {
   writeFileSync('.sdlc-output/result.json', JSON.stringify(report));
 }
 
+function integrationBlocker(error: unknown) {
+  const message = error instanceof Error ? error.message.slice(0, 2000) : 'Integration could not complete';
+  return blockerSchema.parse({ category: 'approval_conflict', scope: 'repository', paths: [],
+    constraint: 'The approved baseline must combine with retained work without discarding conflicting edits',
+    diagnostics: [{ tool: 'policy', message }], remedies: ['Resolve the overlapping changes through a new scoped amendment'] });
+}
+
 async function integration(): Promise<void> {
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
   const context = JSON.parse(readFileSync(join(workspace, '.sdlc-context.json'), 'utf8')) as { state: Lifecycle; policy: Policy };
@@ -237,13 +268,49 @@ async function integration(): Promise<void> {
     const hash = await github.integration(context.state);
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `integration_hash=${hash}\n`);
   } catch (error) {
-    const message = error instanceof Error ? error.message.slice(0, 2000) : 'Integration could not complete';
-    const blocker = blockerSchema.parse({ category: 'approval_conflict', scope: 'repository', paths: [],
-      constraint: 'The approved baseline must combine with retained work without discarding conflicting edits',
-      diagnostics: [{ tool: 'policy', message }], remedies: ['Resolve the overlapping changes through a new scoped amendment'] });
-    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `blocker=${JSON.stringify(blocker)}\n`);
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `blocker=${JSON.stringify(integrationBlocker(error))}\n`);
     throw error;
   }
+}
+
+// Runs in the Reader zone: it alone holds target read access, and it never executes target code.
+export async function source(registry = join(root, registryPath)): Promise<void> {
+  const policy = resolvePolicy(JSON.parse(readFileSync(join(root, '.github/sdlc/policy.json'), 'utf8')));
+  const input = workerInput();
+  const target = workerTarget(process.env, registry);
+  if (!target) throw new Error('The source job serves only registered foreign targets');
+  const token = process.env.SDLC_READER_TOKEN;
+  if (!token) throw new Error('The target Reader token is unavailable');
+  const github = new GitHub(process.env.GITHUB_REPOSITORY ?? '', policy, process.env.SDLC_BOT_LOGIN ?? '',
+    new Octokit({ auth: process.env.GH_TOKEN }), 'auto', { ...target, api: new Octokit({ auth: token }) });
+  await github.verifyTarget();
+  const record = await github.load(input.issue);
+  if (!record) throw new Error('No registered lifecycle');
+  prepareContext(record.state, input);
+  const commits = sourceCommits(record.state);
+  const baselineTests = await github.baselineTests(record.state);
+  const directory = join(process.env.GITHUB_WORKSPACE ?? process.cwd(), sourceDirectory);
+  mkdirSync(directory, { recursive: true });
+  const outputs: string[] = [];
+  let bundle = null;
+  if (input.stage === 'integrate') {
+    // A conflict is a reportable result, not a job failure; failing here would skip the trusted result job.
+    try { outputs.push(`integration_hash=${await github.integration(record.state)}`); }
+    catch (error) { outputs.push(`blocker=${JSON.stringify(integrationBlocker(error))}`); }
+  } else {
+    bundle = createBundle({ remote: `https://github.com/${target.repository}.git`, token, commits, output: join(directory, bundleFile) });
+  }
+  const manifest = manifestSchema.parse({ schemaVersion: 1, target, issue: input.issue, job: input.job,
+    controlSha: input.controlSha, commits, bundle, baselineTests });
+  writeFileSync(join(directory, manifestFile), JSON.stringify(manifest));
+  if (process.env.GITHUB_OUTPUT && outputs.length) appendFileSync(process.env.GITHUB_OUTPUT, `${outputs.join('\n')}\n`);
+}
+
+function materializeSource(): void {
+  const [destination, sha] = process.argv.slice(3);
+  const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
+  materialize({ directory: resolve(workspace, process.env.SDLC_SOURCE_DIR ?? sourceDirectory),
+    destination: destination ?? '', sha: sha ?? '', workspace });
 }
 
 function dependencies(): void {
@@ -265,5 +332,7 @@ if (import.meta.main) {
   else if (operation === 'checks') checks();
   else if (operation === 'integrate') await integration();
   else if (operation === 'dependencies') dependencies();
-  else throw new Error('Expected prepare, collect, check, checks, integrate, or dependencies');
+  else if (operation === 'source') await source();
+  else if (operation === 'materialize') materializeSource();
+  else throw new Error('Expected prepare, collect, check, checks, integrate, dependencies, source, or materialize');
 }

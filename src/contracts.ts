@@ -4,6 +4,9 @@ import type { Lifecycle } from './lifecycle.ts';
 export const shaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const numberSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+export const repositorySchema = z.string().max(200).regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
+// Numeric repository IDs survive renames and transfers; the name is recorded so drift is detected, not followed.
+export const targetRefSchema = z.object({ id: numberSchema, repository: repositorySchema }).strict();
 const modelSelectorSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/)
   .refine(model => model.trim() === model);
 const modelSchema = modelSelectorSchema.refine(model => !['auto', 'unknown'].includes(model.toLowerCase()));
@@ -288,7 +291,7 @@ const delegatedDecisionRecordSchema = z.object({
 }).strict().refine(record => record.job.planHash !== null, 'Delegated decisions require an approved plan binding');
 
 export const lifecycleSchema = z.object({
-  schemaVersion: z.literal(2), issueNumber: numberSchema,
+  schemaVersion: z.literal(2), issueNumber: numberSchema, target: targetRefSchema.optional(),
   requester: text.max(100), request: text.max(60000), phase: phaseSchema,
   baseSha: shaSchema, headSha: shaSchema, controlSha: shaSchema,
   baseBranch: text.max(200), branch: z.string().regex(/^agentic\/epic-\d+-v\d+$/),
@@ -348,7 +351,7 @@ export const lifecycleSchema = z.object({
 
 const storedLifecycleSchema = z.discriminatedUnion('schemaVersion', [
   lifecycleSchema,
-  lifecycleSchema.extend({ schemaVersion: z.literal(1), spend: spendSchema.optional(), pendingCosts: z.never().optional(),
+  lifecycleSchema.extend({ schemaVersion: z.literal(1), target: z.never().optional(), spend: spendSchema.optional(), pendingCosts: z.never().optional(),
     usageHistory: z.never().optional(), recoveries: z.never().optional(), retryAt: z.never().optional(),
     dependencyChoices: z.never().optional(), dependencyPatches: z.never().optional(),
     amendment: z.never().optional(), amendmentHistory: z.never().optional(), decisionHistory: z.never().optional(),

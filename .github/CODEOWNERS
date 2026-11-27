@@ -4,7 +4,8 @@
 # stops agents editing them at all; this file stops unreviewed human edits
 # reaching the default branch. /src/*.ts deliberately matches top-level
 # controller modules only, so agent feature work in src/ subdirectories is
-# reviewed as ordinary code rather than as a policy change.
+# reviewed as ordinary code rather than as a policy change. /scripts/ holds the
+# target setup scripts that operators run with administrator credentials.
 
 /.github/           @dav1dc-github
 /src/*.ts           @dav1dc-github
@@ -12,3 +13,4 @@
 /package.json       @dav1dc-github
 /package-lock.json  @dav1dc-github
 /tsconfig.json      @dav1dc-github
+/scripts/           @dav1dc-github

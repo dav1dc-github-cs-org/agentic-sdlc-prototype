@@ -15,7 +15,8 @@
     ".github/**", ".agents/**", ".vscode/**", "AGENTS.md", "**/AGENTS.md",
     ".npmrc", "**/.npmrc", ".gitmodules", ".gitattributes", "**/.gitattributes",
     "package.json", "**/package.json", "package-lock.json", "**/package-lock.json",
-    "src/*.ts", "tsconfig.json", ".c8rc.json", "**/*instructions.md", "**/*.agent.md"
+    "src/*.ts", "tsconfig.json", ".c8rc.json", "**/*instructions.md", "**/*.agent.md",
+    "scripts/**/sdlc-*"
   ],
   "testPaths": ["test/**/*.test.ts"],
   "sourcePaths": ["src/**/*.ts"],

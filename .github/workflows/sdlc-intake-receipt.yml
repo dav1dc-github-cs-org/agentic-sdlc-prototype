@@ -1,0 +1,35 @@
+name: SDLC Intake Receipt
+
+# Registered target repositories call this workflow at the commit pinned in .github/sdlc/targets.json.
+# It holds no token permissions and no secrets. It records an allowlisted snapshot of the caller's
+# labeled-issue event as an artifact; the controller authenticates the run before trusting the snapshot.
+on:
+  workflow_call: {}
+
+permissions: {}
+
+jobs:
+  receipt:
+    name: Record intake receipt
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Snapshot the labeled issue event
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdlc-intake"
+          jq -c '{
+            schemaVersion: 1,
+            action: .action,
+            label: (.label.name // ""),
+            repository: { id: .repository.id, fullName: .repository.full_name },
+            issue: { number: .issue.number, title: .issue.title, body: (.issue.body // ""), author: .issue.user.login },
+            sender: { login: .sender.login, type: .sender.type }
+          }' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/sdlc-intake/receipt.json"
+      - name: Publish the receipt for the controller
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sdlc-intake
+          path: ${{ runner.temp }}/sdlc-intake/receipt.json
+          if-no-files-found: error
+          retention-days: 3

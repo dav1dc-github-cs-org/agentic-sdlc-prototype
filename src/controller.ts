@@ -7,7 +7,8 @@ import { activateVendorRepair, beginAmendment, decideAmendment, enterPreflight, 
 import {
   acceptDelegatedDecision, assertCurrentResult, assertPublishable, createLifecycle, deferCost, forgetCost, formatObservedModels,
   nextPublicationPhase, nextTask, observeCost, recordChange,
-  recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Job, type JobIdentity, type Lifecycle, type PendingCost, type Stage, type Task,
+  recordUsageResult, requestRepair, settleCost, startJob, validateTasks, type Job, type JobIdentity, type Lifecycle, type PendingCost, type Stage,
+  type TargetRef, type Task,
 } from './lifecycle.ts';
 
 export interface Issue {
@@ -21,16 +22,23 @@ export interface Issue {
 export interface Comment { id: number; body: string; actor: string; human: boolean; createdAt: string }
 export interface Run { id: number; status: string; conclusion: string | null; url: string }
 export interface RecordState { state: Lifecycle; version?: string; needsMigration?: boolean }
+// The target's default branch; controlSha is the trusted control revision when it lives in a different repository.
+export interface Baseline { branch: string; sha: string; controlSha?: string }
+
+export function controlRevision(baseline: Baseline): string {
+  return baseline.controlSha ?? baseline.sha;
+}
 
 export class RetryablePlatformError extends Error {
   readonly retryable = true;
 }
 
 export interface Platform {
+  readonly target?: TargetRef;
   issue(number: number): Promise<Issue>;
   comments(number: number): Promise<Comment[]>;
   canWrite(actor: string): Promise<boolean>;
-  baseline(): Promise<{ branch: string; sha: string }>;
+  baseline(): Promise<Baseline>;
   baselineTests(state: Lifecycle): Promise<string[]>;
   integration(state: Lifecycle): Promise<string>;
   applyIntegration(state: Lifecycle, job: Job, expectedHash: string): Promise<string>;
@@ -96,7 +104,7 @@ export class Controller {
           issue.author.toLowerCase() !== intake.requester.toLowerCase() || !await this.platform.canWrite(intake.actor)) return;
       const baseline = await this.platform.baseline();
       record = { state: createLifecycle(number, intake.requester,
-        this.requestText(intake.title, intake.body), baseline.sha, baseline.branch) };
+        this.requestText(intake.title, intake.body), baseline.sha, baseline.branch, controlRevision(baseline), this.platform.target) };
       if (this.policy.preflight) enterPreflight(record.state, 'baseline', 'researching');
       await this.platform.save(record);
     }
@@ -158,7 +166,8 @@ export class Controller {
           recovery.maintenanceAuthorization = { actor: comment.actor, commentId: comment.id, hash: command.hash, at: comment.createdAt };
         } else if (command.kind === 'amend') {
           const baseline = await this.platform.baseline();
-          const changed = await this.platform.trustedPathsChanged(state.baseSha, baseline.sha);
+          // A foreign target's base is not a control revision, so compare the trusted revision it was pinned to.
+          const changed = await this.platform.trustedPathsChanged(state.target ? state.controlSha : state.baseSha, controlRevision(baseline));
           const previousJob = state.job;
           beginAmendment(state, baseline, this.request(issue), command.feedback, maintainer, changed);
           if (previousJob) this.retainCost(state, previousJob);
@@ -175,7 +184,7 @@ export class Controller {
           const baseline = await this.platform.baseline();
           const moved = baseline.sha !== state.baseSha;
           if (baseline.branch !== state.baseBranch ||
-              await this.platform.trustedPathsChanged(state.controlSha, baseline.sha)) {
+              await this.platform.trustedPathsChanged(state.controlSha, controlRevision(baseline))) {
             throw new Error('The trusted revision changed since this plan; request a revised plan first');
           }
           state.approval = approvePlan({
@@ -185,7 +194,7 @@ export class Controller {
           // No work exists yet, so the approved plan starts from the revision it is approved against.
           state.baseSha = baseline.sha;
           state.headSha = baseline.sha;
-          state.controlSha = baseline.sha;
+          state.controlSha = controlRevision(baseline);
           state.phase = 'decomposing';
           if (moved && this.policy.preflight) enterPreflight(state, 'baseline', 'decomposing');
           else activateVendorRepair(state);
@@ -205,7 +214,7 @@ export class Controller {
           state.request = this.request(issue);
           state.approval = undefined;
           state.baseSha = baseline.sha;
-          state.controlSha = baseline.sha;
+          state.controlSha = controlRevision(baseline);
           state.headSha = baseline.sha;
           state.baseBranch = baseline.branch;
           state.branch = `agentic/epic-${number}-v${previousPlanVersion(state) + 1}`;
@@ -273,7 +282,7 @@ export class Controller {
     if (['awaiting_approval', 'awaiting_amendment', 'paused', 'blocked', 'cancelled'].includes(state.phase)) return;
     const current = await this.platform.baseline();
     if (current.branch !== state.baseBranch ||
-        await this.platform.trustedPathsChanged(state.controlSha, current.sha)) {
+        await this.platform.trustedPathsChanged(state.controlSha, controlRevision(current))) {
       await this.interrupt(record, 'blocked');
       state.error = 'The trusted revision changed. A maintainer can use /sdlc amend <feedback> to retain work, or /sdlc revise <feedback> to start over.';
       await this.platform.save(record);
@@ -288,10 +297,10 @@ export class Controller {
         return;
       }
     }
-    if (current.sha !== state.controlSha) {
+    if (controlRevision(current) !== state.controlSha) {
       // No job is registered here, so adopting the head cannot invalidate a pending result, and
       // workflow_dispatch only ever runs at the head: a stale pin would silently skip every worker.
-      state.controlSha = current.sha;
+      state.controlSha = controlRevision(current);
       await this.platform.save(record);
     }
     if (state.retryAt && this.clock().getTime() < Date.parse(state.retryAt)) {
@@ -709,7 +718,7 @@ export class Controller {
     const recovery = state.recoveries?.find(item => item.status === 'waiting_approval');
     if (!recovery) return;
     const baseline = await this.platform.baseline();
-    if (baseline.sha !== state.controlSha || baseline.branch !== state.baseBranch) return;
+    if (controlRevision(baseline) !== state.controlSha || baseline.branch !== state.baseBranch) return;
     beginAmendment(state, baseline, state.request,
       `Prepare a minimal amendment for recovery ${recovery.id}. Preserve completed work and unchanged requirements.\n` +
       `${recovery.blocker.constraint}\nProposed remedies: ${recovery.blocker.remedies.join('\n')}`, false, false);

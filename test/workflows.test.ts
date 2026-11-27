@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { costSchema, resolvePolicy } from '../src/contracts.ts';
+import { bundleFile } from '../src/source.ts';
 
 const read = (name: string) => parse(readFileSync(`.github/workflows/${name}`, 'utf8'));
 
@@ -27,6 +28,40 @@ test('controller fails loudly when the worker actor gate cannot match the App', 
   assert.equal(guard.env?.actual, '${{ steps.app.outputs.app-slug }}');
   assert.match(guard.run ?? '', /exit 1/);
   assert.ok(steps.indexOf(guard) < steps.findIndex(step => step.run?.includes('src/main.ts')));
+});
+
+test('controller receives the App private key only while a foreign target is enabled', () => {
+  const workflow = read('sdlc-controller.yml');
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.target, {
+    description: 'Registered target repository ID from .github/sdlc/targets.json; leave empty for this repository',
+    required: false, type: 'string',
+  });
+  const steps = workflow.jobs.reconcile.steps as { id?: string; run?: string; env?: Record<string, string> }[];
+  const detect = steps.findIndex(step => step.id === 'targets');
+  const main = steps.findIndex(step => step.run === 'node src/main.ts');
+  assert.ok(detect >= 0 && detect < main);
+  assert.match(steps[detect]!.run!, /\.enabled == true/);
+  assert.equal(steps[detect]!.env, undefined);
+  assert.equal(steps[main]!.env!.SDLC_TARGET, '${{ inputs.target }}');
+  assert.equal(steps[main]!.env!.SDLC_APP_ID, '${{ vars.SDLC_APP_ID }}');
+  assert.equal(steps[main]!.env!.SDLC_APP_PRIVATE_KEY,
+    "${{ steps.targets.outputs.enabled == 'true' && secrets.SDLC_APP_PRIVATE_KEY || '' }}");
+  // No other step may read the key; the token action already holds it for the control-scoped token.
+  const readers = steps.filter(step => JSON.stringify(step).includes('secrets.SDLC_APP_PRIVATE_KEY'));
+  assert.equal(readers.length, 2);
+});
+
+test('the receipt callee and caller template stay credential-free and pinned', () => {
+  const callee = readFileSync('.github/workflows/sdlc-intake-receipt.yml', 'utf8');
+  assert.equal(/\$\{\{\s*secrets|github\.token|id-token|actions\/checkout/.test(callee), false);
+  const workflow = parse(callee);
+  assert.deepEqual(workflow.on, { workflow_call: {} });
+  assert.deepEqual(workflow.permissions, {});
+  for (const job of Object.values(workflow.jobs) as { permissions?: unknown }[]) assert.deepEqual(job.permissions, {});
+  const caller = parse(readFileSync('.github/sdlc/templates/sdlc-intake.yml', 'utf8'));
+  assert.deepEqual(caller.permissions, {});
+  assert.equal(caller.jobs.receipt.secrets, undefined);
+  assert.match(caller.jobs.receipt.uses, /^__CONTROL_REPOSITORY__\/\.github\/workflows\/sdlc-intake-receipt\.yml@__RECEIPT_REF__$/);
 });
 
 test('generated agents have no publishing credentials or direct write permissions', () => {
@@ -81,7 +116,7 @@ test('agents use the repository model with an auto fallback for inference and me
 
 test('checks cannot pass by silently skipping a required stage', () => {
   const workflow = read('sdlc-checks.yml');
-  assert.deepEqual(workflow.jobs.result.needs, ['prepare', 'codeql', 'security', 'tests', 'integration']);
+  assert.deepEqual(workflow.jobs.result.needs, ['source', 'prepare', 'codeql', 'security', 'tests', 'integration']);
   assert.match(workflow.jobs.result.if, /always\(\)/);
   assert.equal(workflow.permissions.contents, 'read');
   assert.equal(workflow.jobs.tests.permissions, undefined);
@@ -115,14 +150,123 @@ test('preflight and integration workflows retain read-only credentials and the r
 });
 
 test('manual workflows pin actions to immutable commits and never persist git credentials', () => {
-  for (const name of ['ci.yml', 'sdlc-controller.yml', 'sdlc-checks.yml']) {
-    for (const job of Object.values(read(name).jobs) as { steps: { uses?: string; with?: Record<string, unknown> }[] }[]) {
-      for (const step of job.steps) {
+  for (const name of ['ci.yml', 'sdlc-controller.yml', 'sdlc-checks.yml', 'sdlc-intake-receipt.yml', 'sdlc-source.yml']) {
+    for (const job of Object.values(read(name).jobs) as { uses?: string; steps?: { uses?: string; with?: Record<string, unknown> }[] }[]) {
+      // Reusable jobs must stay in this repository so they run at the same trusted revision.
+      if (job.uses) assert.match(job.uses, /^\.\/\.github\/workflows\/[a-z-]+\.yml$/);
+      for (const step of job.steps ?? []) {
         if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);
         if (step.uses?.startsWith('actions/checkout@')) assert.equal(step.with?.['persist-credentials'], false);
       }
     }
   }
+});
+
+test('target read access stays in the Reader-zone source job and never reaches candidate code', () => {
+  const sourceText = readFileSync('.github/workflows/sdlc-source.yml', 'utf8');
+  const workflow = parse(sourceText);
+  assert.deepEqual(Object.keys(workflow.on), ['workflow_call']);
+  assert.deepEqual(workflow.permissions, { contents: 'read' });
+  const job = workflow.jobs.source;
+  assert.equal(job.environment, 'sdlc-reader');
+  assert.deepEqual(job.permissions, { contents: 'read' });
+  for (const guard of ['SDLC_ENABLED', 'default_branch', 'SDLC_APP_SLUG', 'github.sha == inputs.control_sha', "inputs.target_id != ''"]) {
+    assert.ok(job.if.includes(guard), guard);
+  }
+  const steps = job.steps as { uses?: string; run?: string; with?: Record<string, string>; env?: Record<string, string> }[];
+  // Only trusted controller code runs here: one control checkout, no target install, build, or test.
+  const checkouts = steps.filter(step => step.uses?.startsWith('actions/checkout@'));
+  assert.deepEqual(checkouts.map(step => step.with), [{ ref: '${{ github.sha }}', 'persist-credentials': false }]);
+  assert.deepEqual(steps.filter(step => step.run).map(step => step.run), ['npm ci --ignore-scripts', 'node src/worker.ts source']);
+  const token = steps.find(step => step.uses?.startsWith('actions/create-github-app-token@'))!;
+  assert.deepEqual(token.with, { 'app-id': '${{ vars.SDLC_READER_APP_ID }}', 'private-key': '${{ secrets.SDLC_READER_PRIVATE_KEY }}',
+    owner: '${{ inputs.target_owner }}', repositories: '${{ inputs.target_name }}', 'permission-contents': 'read' });
+  const worker = steps.find(step => step.run === 'node src/worker.ts source')!;
+  assert.equal(worker.env!.SDLC_READER_TOKEN, '${{ steps.reader.outputs.token }}');
+  assert.ok(steps.indexOf(token) < steps.indexOf(worker));
+  assert.equal(steps.at(-1)!.with!.name, 'sdlc-source');
+  assert.equal((sourceText.match(/SDLC_READER_PRIVATE_KEY/g) ?? []).length, 1);
+  assert.equal(sourceText.includes('SDLC_APP_PRIVATE_KEY'), false);
+
+  const checks = read('sdlc-checks.yml');
+  const agent = parse(readFileSync('.github/workflows/sdlc-agent.md', 'utf8').split('---')[1]!);
+  const compiled = read('sdlc-agent.lock.yml');
+  for (const caller of [checks.jobs.source, agent.jobs.source, compiled.jobs.source]) {
+    assert.equal(caller.uses, './.github/workflows/sdlc-source.yml');
+    assert.equal(caller.if, "inputs.target_id != ''");
+    assert.deepEqual(caller.permissions, { contents: 'read' });
+    assert.equal(caller.secrets, undefined);
+    assert.deepEqual(Object.keys(caller.with).sort(), Object.keys(workflow.on.workflow_call.inputs).sort());
+  }
+  // The controller dispatches these keys for target lifecycles; GitHub rejects undeclared inputs.
+  for (const inputs of [checks.on.workflow_dispatch.inputs, compiled.on.workflow_dispatch.inputs]) {
+    for (const name of ['target_id', 'target_owner', 'target_name']) {
+      assert.deepEqual([inputs[name].required, inputs[name].default, inputs[name].type], [false, '', 'string']);
+    }
+  }
+  const runName = "SDLC ${{ inputs.target_id && format('{0}/{1}', inputs.target_id, inputs.job) || inputs.job }}";
+  assert.equal(checks['run-name'], runName);
+  assert.equal(compiled['run-name'], runName);
+  for (const name of ['ci.yml', 'sdlc-controller.yml', 'sdlc-checks.yml', 'sdlc-intake-receipt.yml', 'sdlc-agent.lock.yml']) {
+    assert.equal(/SDLC_READER_(PRIVATE_KEY|APP_ID|TOKEN)/.test(readFileSync(`.github/workflows/${name}`, 'utf8')), false, name);
+  }
+
+  // A skipped source ancestor must not skip this repository's own runs, and a failed one must stop target runs.
+  for (const name of ['codeql', 'security', 'tests', 'integration']) {
+    assert.match(checks.jobs[name].if, /^!cancelled\(\) && needs\.prepare\.result == 'success' && /);
+  }
+  assert.match(checks.jobs.integration.if, /inputs\.target_id == ''/);
+  for (const guard of [checks.jobs.prepare.if, compiled.jobs.agent.if]) {
+    assert.ok(guard.includes('!cancelled()'));
+    assert.match(guard, /inputs\.target_id == '' && needs\.source\.result == 'skipped' \|\|\s+inputs\.target_id != '' && needs\.source\.result == 'success'/);
+  }
+  assert.ok(compiled.jobs.agent.needs.includes('source'));
+
+  // Candidate jobs restore target code only from the verified artifact, before any target code is installed or run.
+  type Step = { id?: string; name?: string; uses?: string; run?: string; if?: string; with?: Record<string, string>; env?: Record<string, string> };
+  const materialized = (steps: Step[], expected: Record<string, string>, conditionalCheckouts = true) => {
+    const download = steps.findIndex(step => step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'sdlc-source');
+    const restore = steps.findIndex(step => step.run?.includes('worker.ts materialize'));
+    assert.ok(download >= 0 && download < restore);
+    for (const index of [download, restore]) assert.equal(steps[index]!.if, "inputs.target_id != ''");
+    assert.deepEqual(steps[restore]!.env, expected);
+    if (conditionalCheckouts) for (const step of steps) if (step.uses?.startsWith('actions/checkout@') && step.with?.path !== 'control') {
+      assert.equal(step.if, "inputs.target_id == ''");
+    }
+    return restore;
+  };
+  for (const name of ['codeql', 'security']) {
+    const steps = checks.jobs[name].steps as Step[];
+    const restore = materialized(steps, { SCAN_SHA: '${{ needs.prepare.outputs.scan_sha }}' });
+    assert.ok(restore < steps.findIndex(step => step.run === 'node control/src/worker.ts dependencies'));
+  }
+  const tests = checks.jobs.tests.steps as Step[];
+  const restore = materialized(tests, { BASE_SHA: '${{ needs.prepare.outputs.base_sha }}', SOURCE_SHA: '${{ inputs.source_sha }}' });
+  assert.ok(restore < tests.findIndex(step => step.run?.includes('npm ci --ignore-scripts --prefix source')));
+  const prepare = checks.jobs.prepare.steps as Step[];
+  assert.ok(prepare.findIndex(step => step.with?.name === 'sdlc-source') < prepare.findIndex(step => step.id === 'context'));
+  const agentSteps = compiled.jobs.agent.steps as Step[];
+  // gh-aw checkouts cannot be conditional, so a target run checks out the control revision and replaces it.
+  const agentRestore = materialized(agentSteps, { SOURCE_SHA: '${{ inputs.source_sha }}' }, false);
+  const agentSource = agentSteps.findIndex(step => step.uses?.startsWith('actions/checkout@') && step.with?.path === 'source');
+  const prepareStep = agentSteps.findIndex(step => step.run?.includes('src/worker.ts prepare'));
+  assert.ok(agentSource < agentRestore && agentRestore < prepareStep);
+  // gh-aw re-points origin at this repository; the target checkout must regain its offline bundle before the agent runs.
+  const download = agentSteps.find(step => step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'sdlc-source');
+  const credentials = agentSteps.findIndex(step => step.name === 'Configure Git credentials');
+  const origin = agentSteps.findIndex(step => step.run?.includes('remote set-url origin'));
+  const execution = agentSteps.findIndex(step => step.env?.COPILOT_MODEL);
+  assert.ok(prepareStep < credentials && credentials < origin && origin < execution);
+  assert.equal(agentSteps[origin]!.if, "inputs.target_id != ''");
+  assert.equal(agentSteps[origin]!.run,
+    `git -C source remote set-url origin "$GITHUB_WORKSPACE/${download!.with!.path}/${bundleFile}"`);
+  assert.ok(!agentSteps.slice(origin + 1, execution).some(step => step.name === 'Configure Git credentials'));
+  for (const env of [checks.jobs.prepare.steps.find((step: { id?: string }) => step.id === 'context').env, agentSteps[prepareStep]!.env!]) {
+    assert.equal(env.SDLC_TARGET_ID, '${{ inputs.target_id }}');
+    assert.equal(env.SDLC_TARGET_OWNER, '${{ inputs.target_owner }}');
+    assert.equal(env.SDLC_TARGET_NAME, '${{ inputs.target_name }}');
+  }
+  assert.equal(agent.checkout[1].ref, "${{ inputs.target_id == '' && inputs.source_sha || github.sha }}");
 });
 
 test('cost accounting stays bound to the compiler and policy it measures', () => {

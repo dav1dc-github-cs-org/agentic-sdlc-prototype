@@ -1,0 +1,15 @@
+# Managed by the agentic SDLC control plane at __CONTROL_REPOSITORY__.
+# Install or upgrade it with scripts/sdlc-target-setup.sh. The controller accepts intake only while this
+# file matches the rendered template exactly, so any edit here stops intake instead of widening it.
+name: SDLC Intake
+
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  receipt:
+    if: github.event.label.name == '__LABEL__'
+    uses: __CONTROL_REPOSITORY__/.github/workflows/sdlc-intake-receipt.yml@__RECEIPT_REF__

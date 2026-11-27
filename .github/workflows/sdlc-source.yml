@@ -1,0 +1,97 @@
+name: SDLC Source
+
+# Reader zone for registered foreign targets. This job alone holds target read
+# access; it runs only trusted controller code and never executes target code.
+# Later jobs receive the verified bundle and manifest as an artifact.
+on:
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: string
+      job:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      control_sha:
+        required: true
+        type: string
+      stage:
+        required: true
+        type: string
+      target_id:
+        required: true
+        type: string
+      target_owner:
+        required: true
+        type: string
+      target_name:
+        required: true
+        type: string
+    outputs:
+      integration_hash:
+        value: ${{ jobs.source.outputs.integration_hash }}
+      blocker:
+        value: ${{ jobs.source.outputs.blocker }}
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    if: >-
+      vars.SDLC_ENABLED == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.actor == format('{0}[bot]', vars.SDLC_APP_SLUG) &&
+      github.sha == inputs.control_sha &&
+      inputs.target_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: sdlc-reader
+    permissions:
+      contents: read
+    outputs:
+      integration_hash: ${{ steps.source.outputs.integration_hash }}
+      blocker: ${{ steps.source.outputs.blocker }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - name: Mint the target-scoped read token
+        id: reader
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.SDLC_READER_APP_ID }}
+          private-key: ${{ secrets.SDLC_READER_PRIVATE_KEY }}
+          owner: ${{ inputs.target_owner }}
+          repositories: ${{ inputs.target_name }}
+          permission-contents: read
+      - id: source
+        name: Fetch the registered commits without executing target code
+        run: node src/worker.ts source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDLC_READER_TOKEN: ${{ steps.reader.outputs.token }}
+          SDLC_BOT_LOGIN: ${{ vars.SDLC_APP_SLUG }}[bot]
+          SDLC_ISSUE: ${{ inputs.issue }}
+          SDLC_JOB: ${{ inputs.job }}
+          SDLC_SOURCE_SHA: ${{ inputs.source_sha }}
+          SDLC_CONTROL_SHA: ${{ inputs.control_sha }}
+          SDLC_STAGE: ${{ inputs.stage }}
+          SDLC_TARGET_ID: ${{ inputs.target_id }}
+          SDLC_TARGET_OWNER: ${{ inputs.target_owner }}
+          SDLC_TARGET_NAME: ${{ inputs.target_name }}
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sdlc-source
+          path: .sdlc-source/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
